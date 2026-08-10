@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Trace &amp; Route</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<style>
+  :root{
+    --ink:#0B171D; --ink-2:#12242D; --ice:#E4EFF3; --slate:#5C7A88; --line:#1E3A47;
+    --route:#FF3D7F; --pin:#FFC24B; --osm:#4E7A8F;
+    --mono: ui-monospace,"SF Mono","Cascadia Mono","Roboto Mono",Menlo,Consolas,monospace;
+    --sans: ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:var(--ink);color:var(--ice);font-family:var(--sans);overflow:hidden}
+  #map{position:absolute;inset:0}
+  .leaflet-container{background:#0B171D}
+  .leaflet-control-attribution{background:rgba(11,23,29,.82)!important;color:var(--slate)!important;font-size:9px!important}
+  .leaflet-control-attribution a{color:var(--slate)!important}
+
+  .panel{
+    position:absolute;z-index:1000;top:12px;left:12px;width:326px;max-height:calc(100vh - 24px);
+    display:flex;flex-direction:column;
+    background:rgba(11,23,29,.94);border:1px solid var(--line);border-radius:2px;
+    backdrop-filter:blur(10px);box-shadow:0 18px 44px rgba(0,0,0,.55);
+  }
+  .panel header{padding:11px 13px 9px;border-bottom:1px solid var(--line);display:flex;align-items:baseline}
+  .panel h1{margin:0;font-size:11.5px;font-weight:700;letter-spacing:.17em;text-transform:uppercase}
+  .panel header span{font-family:var(--mono);font-size:9.5px;color:var(--slate);letter-spacing:.1em;margin-left:auto}
+  .scroll{overflow-y:auto;padding:12px 13px 14px}
+  .lbl{font-family:var(--mono);font-size:9px;letter-spacing:.19em;text-transform:uppercase;color:var(--slate);margin:0 0 6px}
+  .lbl.mt{margin-top:14px}
+
+  .readout{border:1px solid var(--line);border-radius:2px;margin-bottom:13px}
+  .readout .big{padding:9px 12px 6px;display:flex;align-items:flex-end;gap:6px}
+  .num{font-family:var(--mono);font-size:33px;line-height:.9;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+  .unit{font-family:var(--mono);font-size:11px;color:var(--slate);padding-bottom:3px}
+  .cap{padding:0 12px 9px;font-family:var(--mono);font-size:10px;color:var(--slate);letter-spacing:.05em;
+       white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .strip{border-top:1px solid var(--line);padding:7px 12px;display:flex;align-items:center;gap:8px;
+         font-family:var(--mono);font-size:10.5px;color:var(--slate);letter-spacing:.06em}
+  .strip b{color:var(--route);font-weight:600;font-variant-numeric:tabular-nums;font-size:12px}
+  .strip.none b{color:var(--slate)}
+
+  button{font-family:var(--sans);font-size:12px;color:var(--ice);background:var(--ink-2);
+         border:1px solid var(--line);border-radius:2px;padding:8px 6px;cursor:pointer;
+         transition:background .12s,border-color .12s,color .12s}
+  button:hover{background:#183441}
+  button:focus-visible{outline:2px solid var(--pin);outline-offset:1px}
+  button.on{background:var(--ice);border-color:var(--ice);color:#0B171D;font-weight:600}
+  button.ghost{background:transparent;font-size:11px;padding:7px 4px;color:var(--slate)}
+  button.ghost:hover{color:var(--ice);background:var(--ink-2)}
+  button.ghost:disabled{opacity:.35;cursor:default;background:transparent;color:var(--slate)}
+  button.warn:hover{color:#FF7DA6;border-color:#4A2437}
+
+  .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
+  .g2{display:grid;grid-template-columns:repeat(2,1fr);gap:6px}
+  .mb{margin-bottom:12px}
+
+  .seg{display:flex;border:1px solid var(--line);border-radius:2px;overflow:hidden;margin-bottom:12px}
+  .seg button{flex:1;border:0;border-right:1px solid var(--line);border-radius:0;font-size:11px}
+  .seg button:last-child{border-right:0}
+
+  .paths{border:1px solid var(--line);border-radius:2px;max-height:190px;overflow-y:auto}
+  .p{display:flex;align-items:center;gap:8px;padding:7px 9px;border-bottom:1px solid var(--line);cursor:pointer}
+  .p:last-child{border-bottom:0}
+  .p:hover{background:var(--ink-2)}
+  .p.sel{background:#16303B}
+  .sw{width:9px;height:9px;border-radius:50%;flex:none}
+  .p .nm{flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .p.sel .nm{font-weight:600}
+  .p .mt{font-family:var(--mono);font-size:10px;color:var(--slate);font-variant-numeric:tabular-nums}
+  .p .x{font-family:var(--mono);font-size:13px;color:var(--slate);padding:0 2px;line-height:1}
+  .p .x:hover{color:#FF7DA6}
+  .empty{padding:14px 10px;text-align:center;font-size:11px;color:var(--slate)}
+
+  .row{display:flex;align-items:center;gap:8px;margin-bottom:12px}
+  input[type=range]{flex:1;accent-color:var(--ice);height:18px}
+  .row output{font-family:var(--mono);font-size:11px;min-width:36px;text-align:right}
+  select{width:100%;font-family:var(--sans);font-size:12px;color:var(--ice);background:var(--ink-2);
+         border:1px solid var(--line);border-radius:2px;padding:7px 6px;margin-bottom:12px}
+
+  .hint{font-size:11px;line-height:1.55;color:var(--slate);border-top:1px solid var(--line);padding-top:10px;margin:14px 0 0}
+  .hint b{color:var(--ice);font-weight:600}
+  kbd{font-family:var(--mono);font-size:10px;border:1px solid var(--line);border-radius:2px;padding:0 3px;color:var(--ice)}
+
+  .pin{width:20px;height:20px;border-radius:50%;background:var(--pin);color:#3A2600;
+       font:600 11px/20px var(--mono);text-align:center;border:2px solid #0B171D;box-shadow:0 2px 6px rgba(0,0,0,.5)}
+  .vx{width:11px;height:11px;border-radius:50%;background:var(--ice);border:2px solid #0B171D;box-shadow:0 1px 3px rgba(0,0,0,.6)}
+  .vx.end{background:var(--pin);width:13px;height:13px}
+  .vx.sel{background:var(--route);width:15px;height:15px;box-shadow:0 0 0 4px rgba(255,61,127,.28)}
+
+  .cands{border:1px solid var(--line);border-radius:2px;margin-bottom:8px}
+  .c{display:flex;align-items:center;gap:8px;padding:8px 9px;border-bottom:1px solid var(--line);cursor:pointer}
+  .c:last-child{border-bottom:0}
+  .c:hover{background:var(--ink-2)}
+  .c.sel{background:#16303B}
+  .c .nm{flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .c.sel .nm{font-weight:600}
+  .c .len{font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;color:var(--ice)}
+  .c .dlt{font-family:var(--mono);font-size:9.5px;font-variant-numeric:tabular-nums;color:var(--slate);min-width:44px;text-align:right}
+  .c.win .dlt{color:#4BE0A8}
+  .c .x{font-family:var(--mono);font-size:13px;color:var(--slate);padding:0 2px;line-height:1}
+  .c .x:hover{color:#FF7DA6}
+  .c .bad{font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;color:#0B171D;background:#4BE0A8;
+          padding:1px 4px;border-radius:2px;font-weight:700}
+  .c.err .len{color:#FF7DA6;font-size:10px}
+
+  .via{width:11px;height:11px;border-radius:2px;background:var(--ice);border:2px solid #0B171D;
+       box-shadow:0 1px 3px rgba(0,0,0,.6);transform:rotate(45deg)}
+  .via.sel{background:var(--pin);width:14px;height:14px;box-shadow:0 0 0 4px rgba(255,194,75,.26)}
+
+  .toast{position:absolute;z-index:1200;bottom:20px;left:50%;transform:translateX(-50%);
+         background:var(--ink-2);border:1px solid var(--line);border-left:2px solid var(--pin);
+         padding:8px 14px;font-size:12px;border-radius:2px;opacity:0;pointer-events:none;transition:opacity .2s}
+  .toast.show{opacity:1}
+  .busy{position:absolute;z-index:1200;top:12px;right:60px;background:var(--ink-2);border:1px solid var(--line);
+        padding:7px 12px;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;border-radius:2px;display:none}
+  .busy.show{display:block}
+  .drawing{cursor:crosshair}
+
+  @media (max-width:720px){
+    .panel{top:auto;bottom:0;left:0;right:0;width:auto;max-height:64vh;border-radius:0;border-left:0;border-right:0;border-bottom:0}
+    .num{font-size:27px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div class="toast" id="toast"></div>
+<div class="busy" id="busy">LOADING…</div>
+
+<section class="panel">
+  <header><h1>Trace &amp; Route</h1><span id="tag">ADD</span></header>
+  <div class="scroll">
+
+    <div class="readout">
+      <div class="big"><span class="num" id="plen">0</span><span class="unit" id="punit">m</span></div>
+      <div class="cap" id="pcap">No path yet</div>
+      <div class="strip none" id="strip">ROUTE <b id="rlen">—</b><span id="rcap">not set</span></div>
+    </div>
+
+    <div class="seg">
+      <button id="m-add" class="on">Add points</button>
+      <button id="m-edit">Edit points</button>
+      <button id="m-route">Route</button>
+    </div>
+
+    <div id="tools-add">
+      <p class="lbl">Attach new points to</p>
+      <div class="g2 mb">
+        <button id="end-end" class="on">End of path</button>
+        <button id="end-start">Start of path</button>
+      </div>
+    </div>
+
+    <div id="tools-edit" hidden>
+      <div class="g2 mb">
+        <button class="ghost warn" id="del-pt" disabled>Delete point</button>
+        <button class="ghost" id="split-pt" disabled>Split path here</button>
+      </div>
+    </div>
+
+    <div id="tools-route" hidden>
+      <div class="g2 mb">
+        <button id="set-a">Set start</button>
+        <button id="set-b">Set finish</button>
+      </div>
+      <p class="lbl">Options from A to B</p>
+      <div class="cands" id="clist"><div class="empty">Place a start and a finish</div></div>
+      <div class="g3 mb">
+        <button class="ghost" id="c-new">Variant</button>
+        <button class="ghost" id="del-via" disabled>Drop via</button>
+        <button class="ghost warn" id="clr-route">Reset</button>
+      </div>
+    </div>
+
+    <p class="lbl">Paths</p>
+    <div class="paths" id="list"><div class="empty">Click the map to start your first path</div></div>
+    <div class="g2" style="margin-top:6px">
+      <button class="ghost" id="new-path">New path</button>
+      <button class="ghost" id="undo">Undo</button>
+    </div>
+
+    <p class="lbl mt">Junction snap</p>
+    <div class="row">
+      <input type="range" id="snap" min="1" max="40" value="10" aria-label="Junction snap radius in metres">
+      <output id="snap-out">10 m</output>
+    </div>
+
+    <p class="lbl">Basemap</p>
+    <select id="base">
+      <option value="street">Street — OpenStreetMap</option>
+      <option value="topo">Terrain — OpenTopoMap</option>
+      <option value="light">Light — Carto Positron</option>
+      <option value="dark" selected>Dark — Carto Dark Matter</option>
+      <option value="sat">Satellite — Esri</option>
+    </select>
+
+    <p class="lbl">Existing paths from OpenStreetMap</p>
+    <div class="g2 mb">
+      <button class="ghost" id="imp-bike">Load bike &amp; foot</button>
+      <button class="ghost" id="imp-road">Load all roads</button>
+    </div>
+    <div class="g3">
+      <button class="ghost" id="save">Save</button>
+      <button class="ghost" id="load">Load</button>
+      <button class="ghost warn" id="clear">Clear</button>
+    </div>
+    <input type="file" id="file" accept=".json,.geojson,application/json" hidden>
+
+    <p class="hint" id="hint"></p>
+  </div>
+</section>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+(function(){
+"use strict";
+
+/* ---------------------------------- map ---------------------------------- */
+const map = L.map('map',{doubleClickZoom:false, zoomControl:true, attributionControl:true})
+  .setView([64.1466,-21.9426],14);
+map.zoomControl.setPosition('topright');
+
+const BASES = {
+  street:['https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png','&copy; OpenStreetMap',19],
+  topo:['https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png','&copy; OpenStreetMap, SRTM · OpenTopoMap',17],
+  light:['https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png','&copy; OpenStreetMap &copy; CARTO',20],
+  dark:['https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png','&copy; OpenStreetMap &copy; CARTO',20],
+  sat:['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}','Imagery &copy; Esri',19]
+};
+let baseLayer=null;
+function setBase(k){
+  if(baseLayer) map.removeLayer(baseLayer);
+  const b=BASES[k];
+  baseLayer=L.tileLayer(b[0],{attribution:b[1],maxNativeZoom:b[2],maxZoom:20,detectRetina:true}).addTo(map);
+  baseLayer.bringToBack();
+}
+setBase('dark');
+document.getElementById('base').onchange = e => setBase(e.target.value);
+
+const gPaths=L.layerGroup().addTo(map);
+const gRoute=L.layerGroup().addTo(map);
+const gVerts=L.layerGroup().addTo(map);
+const gPins =L.layerGroup().addTo(map);
+
+/* -------------------------------- geometry -------------------------------- */
+const R=6371008.8, rad=d=>d*Math.PI/180;
+function hav(a,b){
+  const dLat=rad(b.lat-a.lat), dLng=rad(b.lng-a.lng);
+  const s=Math.sin(dLat/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dLng/2)**2;
+  return 2*R*Math.asin(Math.sqrt(s));
+}
+let kx=Math.cos(rad(64.15));
+const PX=p=>p.lng*kx, PY=p=>p.lat;
+function segInt(A,B,P,Q){
+  const ax=PX(A),ay=PY(A),bx=PX(B),by=PY(B),px=PX(P),py=PY(P),qx=PX(Q),qy=PY(Q);
+  const rx=bx-ax,ry=by-ay,sx=qx-px,sy=qy-py, den=rx*sy-ry*sx;
+  if(Math.abs(den)<1e-16) return null;
+  const t=((px-ax)*sy-(py-ay)*sx)/den, u=((px-ax)*ry-(py-ay)*rx)/den, e=1e-9;
+  if(t<-e||t>1+e||u<-e||u>1+e) return null;
+  return {t:t,u:u};
+}
+function lerp(A,B,t){ return {lat:A.lat+t*(B.lat-A.lat), lng:A.lng+t*(B.lng-A.lng)}; }
+function projOn(P,A,B){
+  const ax=PX(A),ay=PY(A),dx=PX(B)-ax,dy=PY(B)-ay, L2=dx*dx+dy*dy;
+  let t = L2 ? ((PX(P)-ax)*dx+(PY(P)-ay)*dy)/L2 : 0;
+  t=Math.max(0,Math.min(1,t));
+  const pt=lerp(A,B,t);
+  return {t:t, pt:pt, d:hav(P,pt)};
+}
+function pathLen(p){ let s=0; for(let i=1;i<p.pts.length;i++) s+=hav(p.pts[i-1],p.pts[i]); return s; }
+function fmt(m){
+  if(m==null) return ['—',''];
+  return m<1000 ? [String(Math.round(m)),'m'] : [(m/1000).toFixed(2),'km'];
+}
+
+/* --------------------------------- state --------------------------------- */
+const PALETTE=['#37D6BE','#FFC24B','#8FA6FF','#FF9F6E','#C48FFF','#7CE58A'];
+let paths=[], activeId=null, seq=0, colorSeq=0;
+let mode='add', appendTo='end';
+let selVert=null;
+let A=null, B=null, pickNext=null;
+let dirty=true, graph=null;
+let history=[];
+
+const snapEl=document.getElementById('snap');
+const snapM=()=>+snapEl.value;
+
+function newPath(name){
+  const p={id:++seq, name:name||('Path '+(paths.filter(x=>x.source!=='osm').length+1)),
+           pts:[], color:PALETTE[colorSeq++%PALETTE.length], source:'drawn'};
+  paths.push(p); activeId=p.id; return p;
+}
+const active=()=>paths.find(p=>p.id===activeId)||null;
+const byId=id=>paths.find(p=>p.id===id);
+
+function save(){ history.push(JSON.stringify(paths)); if(history.length>50) history.shift(); }
+function undo(){
+  const s=history.pop(); if(!s){ toast('Nothing to undo'); return; }
+  paths=JSON.parse(s);
+  if(!byId(activeId)) activeId = paths.length?paths[paths.length-1].id:null;
+  selVert=null; dirty=true; render();
+}
+function touch(){ dirty=true; render(); if(A&&B) solveAll(); }
+
+/* ------------------------------ graph builder ------------------------------ */
+function buildGraph(){
+  const nodes=[], adj=new Map(), tol=snapM();
+  const dLat=tol/111320, dLng=tol/(111320*Math.max(kx,.05));
+  const cell=Math.max(dLat,dLng)*2;
+  const reg=new Map();
+  function nodeAt(pt){
+    const ci=Math.floor(pt.lat/cell), cj=Math.floor(pt.lng/cell);
+    let best=-1,bd=tol;
+    for(let i=ci-1;i<=ci+1;i++) for(let j=cj-1;j<=cj+1;j++){
+      const arr=reg.get(i+':'+j); if(!arr) continue;
+      for(let n=0;n<arr.length;n++){ const d=hav(nodes[arr[n]],pt); if(d<=bd){bd=d;best=arr[n];} }
+    }
+    if(best>=0) return best;
+    const id=nodes.push({lat:pt.lat,lng:pt.lng})-1;
+    const k=ci+':'+cj;
+    if(!reg.has(k)) reg.set(k,[]);
+    reg.get(k).push(id);
+    return id;
+  }
+  function link(a,b){
+    if(a===b) return;
+    if(!adj.has(a)) adj.set(a,new Set());
+    if(!adj.has(b)) adj.set(b,new Set());
+    adj.get(a).add(b); adj.get(b).add(a);
+  }
+
+  const segs=[];
+  for(const p of paths) for(let i=0;i<p.pts.length-1;i++) segs.push({A:p.pts[i],B:p.pts[i+1]});
+
+  const SC=0.002, gi=new Map();
+  function cellsOf(s){
+    const x0=Math.floor(Math.min(s.A.lng,s.B.lng)/SC), x1=Math.floor(Math.max(s.A.lng,s.B.lng)/SC);
+    const y0=Math.floor(Math.min(s.A.lat,s.B.lat)/SC), y1=Math.floor(Math.max(s.A.lat,s.B.lat)/SC);
+    const out=[];
+    for(let x=x0;x<=x1;x++) for(let y=y0;y<=y1;y++) out.push(x+':'+y);
+    return out;
+  }
+  segs.forEach((s,i)=>{ for(const k of cellsOf(s)){ if(!gi.has(k)) gi.set(k,[]); gi.get(k).push(i); } });
+
+  const cuts=segs.map(()=>[]);
+  segs.forEach((s,i)=>{
+    const seen=new Set();
+    for(const k of cellsOf(s)){
+      const bucket=gi.get(k)||[];
+      for(let n=0;n<bucket.length;n++){
+        const j=bucket[n];
+        if(j<=i||seen.has(j)) continue;
+        seen.add(j);
+        const r=segInt(s.A,s.B,segs[j].A,segs[j].B);
+        if(!r) continue;
+        if(r.t>1e-9&&r.t<1-1e-9) cuts[i].push(r.t);
+        if(r.u>1e-9&&r.u<1-1e-9) cuts[j].push(r.u);
+      }
+    }
+  });
+
+  segs.forEach((s,i)=>{
+    const ts=[0].concat(cuts[i]).concat([1]).sort((a,b)=>a-b);
+    let prev=nodeAt(s.A), pt=0;
+    for(let k=1;k<ts.length;k++){
+      if(ts[k]-pt<1e-9) continue;
+      const id=nodeAt(ts[k]>=1?s.B:lerp(s.A,s.B,ts[k]));
+      link(prev,id); prev=id; pt=ts[k];
+    }
+  });
+
+  graph={nodes:nodes,adj:adj}; dirty=false;
+  return graph;
+}
+function G(){ return (dirty||!graph) ? buildGraph() : graph; }
+
+function nearestGraphNode(ll){
+  const g=G(); let best=-1,bd=Infinity;
+  for(let i=0;i<g.nodes.length;i++){
+    if(!g.adj.has(i)) continue;
+    const d=hav(g.nodes[i],ll);
+    if(d<bd){bd=d;best=i;}
+  }
+  return best;
+}
+function dijkstra(src,dst){
+  const g=G(), dist=new Map([[src,0]]), prev=new Map(), done=new Set(), pq=[[0,src]];
+  while(pq.length){
+    let bi=0; for(let i=1;i<pq.length;i++) if(pq[i][0]<pq[bi][0]) bi=i;
+    const top=pq.splice(bi,1)[0], d=top[0], u=top[1];
+    if(done.has(u)) continue;
+    done.add(u);
+    if(u===dst) break;
+    const nb=g.adj.get(u); if(!nb) continue;
+    for(const v of nb){
+      if(done.has(v)) continue;
+      const nd=d+hav(g.nodes[u],g.nodes[v]);
+      if(nd<(dist.has(v)?dist.get(v):Infinity)){ dist.set(v,nd); prev.set(v,u); pq.push([nd,v]); }
+    }
+  }
+  if(!dist.has(dst)) return null;
+  const out=[dst];
+  while(out[0]!==src){ const p=prev.get(out[0]); if(p===undefined) return null; out.unshift(p); }
+  return {path:out.map(i=>g.nodes[i]), len:dist.get(dst)};
+}
+
+/* -------------------------------- rendering -------------------------------- */
+function repaintLines(){
+  gPaths.clearLayers();
+  for(const p of paths){
+    if(p.pts.length<2) continue;
+    const act=p.id===activeId;
+    if(act) L.polyline(p.pts,{color:'#FFFFFF',weight:8,opacity:.16,interactive:false}).addTo(gPaths);
+    L.polyline(p.pts,{
+      color: p.source==='osm' ? '#4E7A8F' : p.color,
+      weight: p.source==='osm' ? 2 : (act?4:3),
+      opacity: p.source==='osm' ? .75 : (act?1:.7)
+    }).addTo(gPaths).on('click', function(ev){
+      if(mode==='route') return;
+      L.DomEvent.stop(ev);
+      if(p.source==='osm'){ toast('Imported paths are read-only — draw alongside to extend them'); return; }
+      if(mode==='add' && p.id===activeId){ insertOnPath(p, ev.latlng); return; }
+      activeId=p.id; selVert=null; render();
+    });
+  }
+}
+function render(){
+  repaintLines();
+  gVerts.clearLayers();
+  const a=active();
+  if(a && (mode==='add'||mode==='edit') && a.pts.length && a.pts.length<=400){
+    a.pts.forEach(function(pt,i){
+      const isEnd = i===0||i===a.pts.length-1;
+      const isSel = selVert && selVert.pathId===a.id && selVert.i===i;
+      const cls='vx'+(isEnd?' end':'')+(isSel?' sel':'');
+      const m=L.marker(pt,{
+        icon:L.divIcon({className:'',html:'<div class="'+cls+'"></div>',iconSize:[14,14],iconAnchor:[7,7]}),
+        draggable: mode==='edit', keyboard:false, zIndexOffset:400
+      }).addTo(gVerts);
+      m.on('click', function(ev){ L.DomEvent.stop(ev); selVert={pathId:a.id,i:i}; render(); });
+      m.on('dragstart', function(){ save(); });
+      m.on('drag', function(ev){ a.pts[i]={lat:ev.latlng.lat,lng:ev.latlng.lng}; repaintLines(); });
+      m.on('dragend', function(){ selVert={pathId:a.id,i:i}; touch(); });
+    });
+  }
+  drawPins(); panel();
+}
+function drawPins(){
+  gPins.clearLayers();
+  if(A) L.marker(A,{icon:L.divIcon({className:'',html:'<div class="pin">A</div>',iconSize:[20,20],iconAnchor:[10,10]}),zIndexOffset:600}).addTo(gPins);
+  if(B) L.marker(B,{icon:L.divIcon({className:'',html:'<div class="pin">B</div>',iconSize:[20,20],iconAnchor:[10,10]}),zIndexOffset:600}).addTo(gPins);
+}
+
+function panel(){
+  const a=active();
+  const f=fmt(a? (a.pts.length>1?pathLen(a):0) : null);
+  const numEl=document.getElementById('plen');
+  numEl.textContent = a? f[0] : '0';
+  numEl.style.color = a? (a.source==='osm'?'#4E7A8F':a.color) : '#5C7A88';
+  document.getElementById('punit').textContent = a? (f[1]||'m') : 'm';
+  document.getElementById('pcap').textContent = a
+    ? a.name+' · '+a.pts.length+' point'+(a.pts.length===1?'':'s')+(a.source==='osm'?' · imported':'')
+    : 'No path yet';
+
+  const list=document.getElementById('list');
+  const drawn=paths.filter(p=>p.source!=='osm'), osm=paths.filter(p=>p.source==='osm');
+  if(!paths.length){
+    list.innerHTML='<div class="empty">Click the map to start your first path</div>';
+  } else {
+    list.innerHTML='';
+    drawn.forEach(p=>list.appendChild(rowFor(p)));
+    if(osm.length){
+      const d=document.createElement('div');
+      d.className='p'; d.style.cursor='default';
+      d.innerHTML='<span class="sw" style="background:#4E7A8F"></span>'+
+        '<span class="nm" style="color:#5C7A88">'+osm.length+' imported paths</span>'+
+        '<span class="mt">'+(osm.reduce((s,p)=>s+pathLen(p),0)/1000).toFixed(1)+' km</span>'+
+        '<span class="x" title="Remove imported paths">×</span>';
+      d.querySelector('.x').onclick=function(e){
+        e.stopPropagation(); save();
+        paths=paths.filter(p=>p.source!=='osm');
+        touch();
+      };
+      list.appendChild(d);
+    }
+  }
+  document.getElementById('del-pt').disabled = !selVert;
+  document.getElementById('split-pt').disabled = !selVert;
+}
+function rowFor(p){
+  const d=document.createElement('div');
+  d.className='p'+(p.id===activeId?' sel':'');
+  const f=fmt(pathLen(p));
+  d.innerHTML='<span class="sw" style="background:'+p.color+'"></span>'+
+    '<span class="nm">'+escapeHtml(p.name)+'</span>'+
+    '<span class="mt">'+f[0]+f[1]+'</span><span class="x" title="Delete path">×</span>';
+  d.onclick=function(){ activeId=p.id; selVert=null; render(); };
+  d.querySelector('.nm').ondblclick=function(e){
+    e.stopPropagation();
+    const nm=prompt('Name this path',p.name);
+    if(nm){ p.name=nm.slice(0,40); render(); }
+  };
+  d.querySelector('.x').onclick=function(e){
+    e.stopPropagation(); save();
+    paths=paths.filter(x=>x.id!==p.id);
+    if(activeId===p.id){
+      const last=paths.filter(x=>x.source!=='osm').slice(-1)[0];
+      activeId=last?last.id:null;
+    }
+    selVert=null; touch();
+  };
+  return d;
+}
+function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+/* ------------------------------ path editing ------------------------------ */
+function addPoint(ll){
+  let a=active();
+  if(!a || a.source==='osm') a=newPath();
+  save();
+  const pt={lat:ll.lat,lng:ll.lng};
+  if(appendTo==='start') a.pts.unshift(pt); else a.pts.push(pt);
+  selVert=null; touch();
+}
+function insertOnPath(p, ll){
+  let best=null;
+  for(let i=0;i<p.pts.length-1;i++){
+    const r=projOn(ll,p.pts[i],p.pts[i+1]);
+    if(!best||r.d<best.d) best={d:r.d,i:i,pt:r.pt};
+  }
+  if(!best) return;
+  save();
+  p.pts.splice(best.i+1,0,best.pt);
+  selVert={pathId:p.id,i:best.i+1};
+  touch();
+  toast('Point inserted — switch to Edit points to drag it');
+}
+document.getElementById('del-pt').onclick=function(){
+  if(!selVert) return;
+  const p=byId(selVert.pathId); if(!p) return;
+  save(); p.pts.splice(selVert.i,1);
+  if(p.pts.length===0){
+    paths=paths.filter(x=>x.id!==p.id);
+    const last=paths.filter(x=>x.source!=='osm').slice(-1)[0];
+    activeId=last?last.id:null;
+  }
+  selVert=null; touch();
+};
+document.getElementById('split-pt').onclick=function(){
+  if(!selVert) return;
+  const p=byId(selVert.pathId), i=selVert.i;
+  if(!p||i<1||i>p.pts.length-2){ toast('Pick a point in the middle of the path'); return; }
+  save();
+  const tail=p.pts.slice(i);
+  p.pts=p.pts.slice(0,i+1);
+  const np={id:++seq,name:p.name+' (2)',pts:tail.map(x=>({lat:x.lat,lng:x.lng})),
+            color:PALETTE[colorSeq++%PALETTE.length],source:'drawn'};
+  paths.splice(paths.indexOf(p)+1,0,np);
+  activeId=np.id; selVert=null; touch();
+};
+
+/* --------------------------- route candidates ---------------------------- */
+/* A candidate is one way of getting from A to B. It is defined by an ordered
+   list of via points; the network is solved between consecutive vias. A
+   candidate with no vias is the app's own optimal route. Dragging a via off
+   onto a different path is how you turn the app's answer into your own. */
+
+const CPAL=['#FF3D7F','#4BE0A8','#FFD24B','#7FB2FF','#C48FFF','#FF9F6E'];
+let cands=[], activeCand=null, candSeq=0, selVia=null;
+
+function newCand(vias,name){
+  const c={id:++candSeq, name:name||(candSeq===1?'Optimal':'Option '+candSeq),
+           vias:(vias||[]).map(v=>({lat:v.lat,lng:v.lng})),
+           color:CPAL[(candSeq-1)%CPAL.length], legs:[], len:null, err:null};
+  cands.push(c); activeCand=c.id; return c;
+}
+const curCand=()=>cands.find(c=>c.id===activeCand)||null;
+
+function clearRoute(){
+  gRoute.clearLayers();
+  cands=[]; activeCand=null; candSeq=0; selVia=null;
+  const s=document.getElementById('strip');
+  document.getElementById('rlen').textContent='—';
+  document.getElementById('rcap').textContent = A&&B?'':(A?'finish not set':'not set');
+  s.classList.add('none');
+  if(document.getElementById('clist')) candPanel();
+}
+
+/* solve one candidate: A -> via1 -> ... -> B, leg by leg */
+function solveCand(c){
+  c.legs=[]; c.len=null; c.err=null;
+  if(!A||!B){ c.err='no endpoints'; return; }
+  const stops=[A].concat(c.vias,[B]);
+  let total=0;
+  for(let i=0;i<stops.length-1;i++){
+    const na=nearestGraphNode(stops[i]), nb=nearestGraphNode(stops[i+1]);
+    if(na<0||nb<0){ c.err='nothing to route on'; return; }
+    if(na===nb){ c.legs.push([G().nodes[na]]); continue; }
+    const r=dijkstra(na,nb);
+    if(!r){ c.err='leg '+(i+1)+' does not connect'; return; }
+    c.legs.push(r.path); total+=r.len;
+  }
+  c.len=total;
+}
+function solveAll(){
+  if(!A||!B){ gRoute.clearLayers(); candPanel(); strip(); return; }
+  if(!cands.length) newCand([]);
+  cands.forEach(solveCand);
+  drawCands(); candPanel(); strip();
+}
+const bestCand=()=>cands.filter(c=>c.len!=null).sort((a,b)=>a.len-b.len)[0]||null;
+
+function drawCands(){
+  gRoute.clearLayers();
+  const best=bestCand();
+  /* non-active first so the active one sits on top */
+  cands.slice().sort(function(x,y){
+    return (x.id===activeCand?1:0)-(y.id===activeCand?1:0);
+  }).forEach(function(c){
+    if(c.err||!c.legs.length) return;
+    const geom=[].concat.apply([],c.legs);
+    if(geom.length<2) return;
+    const act=c.id===activeCand;
+    if(act) L.polyline(geom,{color:c.color,weight:14,opacity:.16,interactive:false}).addTo(gRoute);
+    if(best&&c.id===best.id&&cands.length>1)
+      L.polyline(geom,{color:'#FFFFFF',weight:9,opacity:.14,interactive:false}).addTo(gRoute);
+    L.polyline(geom,{color:c.color,weight:act?5:3,opacity:act?.95:.5,
+                     dashArray:act?null:'1 7',lineCap:'round',interactive:false}).addTo(gRoute);
+  });
+  /* via handles, active candidate only */
+  const c=curCand();
+  if(c && mode==='route'){
+    c.vias.forEach(function(v,i){
+      const sel = selVia && selVia.candId===c.id && selVia.i===i;
+      const m=L.marker(v,{
+        icon:L.divIcon({className:'',html:'<div class="via'+(sel?' sel':'')+'"></div>',iconSize:[14,14],iconAnchor:[7,7]}),
+        draggable:true, keyboard:false, zIndexOffset:500
+      }).addTo(gRoute);
+      m.on('click',function(ev){ L.DomEvent.stop(ev); selVia={candId:c.id,i:i}; drawCands(); candPanel(); });
+      m.on('drag',function(ev){
+        c.vias[i]={lat:ev.latlng.lat,lng:ev.latlng.lng};
+        const now=Date.now();
+        if(now-lastDrag>70){ lastDrag=now; solveCand(c); strip(); candPanel(); }
+      });
+      m.on('dragend',function(){
+        selVia={candId:c.id,i:i};
+        solveCand(c); drawCands(); candPanel(); strip();
+      });
+    });
+  }
+}
+let lastDrag=0;
+
+function strip(){
+  const s=document.getElementById('strip'), c=curCand(), best=bestCand();
+  if(!c||c.len==null){
+    document.getElementById('rlen').textContent='—';
+    document.getElementById('rcap').textContent = c&&c.err ? c.err : (A&&B?'':(A?'finish not set':'not set'));
+    s.classList.add('none'); return;
+  }
+  const f=fmt(c.len);
+  document.getElementById('rlen').textContent=f[0]+' '+f[1];
+  const d = best && best.id!==c.id ? '+'+fmt(c.len-best.len).join('')+' vs best' : (cands.length>1?'shortest':'· '+c.vias.length+' via');
+  document.getElementById('rcap').textContent='· '+d;
+  s.classList.remove('none');
+}
+
+function candPanel(){
+  const list=document.getElementById('clist');
+  if(!list) return;
+  if(!A||!B){ list.innerHTML='<div class="empty">Place a start and a finish</div>'; }
+  else if(!cands.length){ list.innerHTML='<div class="empty">No options yet</div>'; }
+  else{
+    const best=bestCand();
+    list.innerHTML='';
+    cands.slice().sort(function(a,b){
+      if(a.len==null) return 1; if(b.len==null) return -1; return a.len-b.len;
+    }).forEach(function(c){
+      const win = best && c.id===best.id && c.len!=null;
+      const d=document.createElement('div');
+      d.className='c'+(c.id===activeCand?' sel':'')+(win?' win':'')+(c.err?' err':'');
+      const f=fmt(c.len);
+      const delta = c.err ? '' : (win ? (cands.length>1?'<span class="bad">BEST</span>':'')
+                                     : '+'+fmt(c.len-best.len).join(''));
+      d.innerHTML='<span class="sw" style="background:'+c.color+'"></span>'+
+        '<span class="nm">'+escapeHtml(c.name)+'</span>'+
+        '<span class="len">'+(c.err?escapeHtml(c.err):f[0]+' '+f[1])+'</span>'+
+        '<span class="dlt">'+delta+'</span>'+
+        '<span class="x" title="Delete option">×</span>';
+      d.onclick=function(){ activeCand=c.id; selVia=null; drawCands(); candPanel(); strip(); };
+      d.querySelector('.nm').ondblclick=function(e){
+        e.stopPropagation();
+        const nm=prompt('Name this option',c.name);
+        if(nm){ c.name=nm.slice(0,40); candPanel(); }
+      };
+      d.querySelector('.x').onclick=function(e){
+        e.stopPropagation();
+        cands=cands.filter(x=>x.id!==c.id);
+        if(activeCand===c.id) activeCand=cands.length?cands[cands.length-1].id:null;
+        selVia=null; drawCands(); candPanel(); strip();
+      };
+      list.appendChild(d);
+    });
+  }
+  const dv=document.getElementById('del-via');
+  if(dv) dv.disabled=!selVia;
+}
+
+/* clicking the map in route mode adds a via to the active candidate, inserted
+   at the leg it lands nearest so the route keeps its existing shape */
+function addVia(ll){
+  const c=curCand();
+  if(!c){ toast('No option selected'); return; }
+  let k=c.legs.length?c.legs.length-1:c.vias.length, bd=Infinity;
+  c.legs.forEach(function(leg,li){
+    for(let i=0;i<leg.length-1;i++){
+      const r=projOn(ll,leg[i],leg[i+1]);
+      if(r.d<bd){ bd=r.d; k=li; }
+    }
+  });
+  const i=nearestGraphNode(ll);
+  const g=G();
+  const snap = i>=0 ? {lat:g.nodes[i].lat,lng:g.nodes[i].lng} : {lat:ll.lat,lng:ll.lng};
+  c.vias.splice(k,0,snap);
+  selVia={candId:c.id,i:k};
+  solveCand(c); drawCands(); candPanel(); strip();
+}
+
+document.getElementById('set-a').onclick=function(){ pickNext='A'; toast('Click the map to place the start'); };
+document.getElementById('set-b').onclick=function(){ pickNext='B'; toast('Click the map to place the finish'); };
+document.getElementById('c-new').onclick=function(){
+  if(!A||!B){ toast('Place a start and a finish first'); return; }
+  const src=curCand();
+  const c=newCand(src?src.vias:[], null);
+  if(src) c.name=src.name+' variant';
+  selVia=null; solveCand(c); drawCands(); candPanel(); strip();
+  toast('Drag a via, or click the map, to pull this option onto a different path');
+};
+document.getElementById('del-via').onclick=function(){
+  if(!selVia) return;
+  const c=cands.find(x=>x.id===selVia.candId); if(!c) return;
+  c.vias.splice(selVia.i,1); selVia=null;
+  solveCand(c); drawCands(); candPanel(); strip();
+};
+document.getElementById('clr-route').onclick=function(){ A=B=null; pickNext=null; clearRoute(); drawPins(); };
+
+/* --------------------------------- input --------------------------------- */
+map.on('click', function(ev){
+  if(mode==='route'){
+    const i=nearestGraphNode(ev.latlng);
+    const g=G();
+    const snap = i>=0 ? {lat:g.nodes[i].lat,lng:g.nodes[i].lng} : {lat:ev.latlng.lat,lng:ev.latlng.lng};
+    if(pickNext==='A'){ A=snap; pickNext=null; drawPins(); clearRoute(); solveAll(); return; }
+    if(pickNext==='B'){ B=snap; pickNext=null; drawPins(); clearRoute(); solveAll(); return; }
+    if(!A){ A=snap; drawPins(); candPanel(); strip(); return; }
+    if(!B){ B=snap; drawPins(); clearRoute(); solveAll(); return; }
+    addVia(ev.latlng);
+    return;
+  }
+  if(mode==='add') addPoint(ev.latlng);
+  if(mode==='edit'){ selVert=null; render(); }
+});
+
+const MODES={add:'m-add',edit:'m-edit',route:'m-route'};
+const HINTS={
+  add:'<b>Add points:</b> every click extends the active path. Click the active line itself to insert a point mid-way. Use <b>New path</b> to start a separate one.',
+  edit:'<b>Edit points:</b> drag any vertex to move it. Click one to select, then delete it or split the path there. <kbd>Delete</kbd> works too.',
+  route:'<b>Route:</b> click for the start, click again for the finish — the app solves the shortest way. Then <b>Variant</b> to copy it, and click or drag a <b>via</b> to pull that copy onto a different path. Every option is listed with its exact distance.'
+};
+function setMode(m){
+  mode=m; pickNext=null; selVert=null;
+  for(const k in MODES) document.getElementById(MODES[k]).classList.toggle('on',k===m);
+  document.getElementById('tag').textContent=({add:'ADD',edit:'EDIT',route:'ROUTE'})[m];
+  document.getElementById('hint').innerHTML=HINTS[m];
+  document.getElementById('tools-add').hidden=m!=='add';
+  document.getElementById('tools-edit').hidden=m!=='edit';
+  document.getElementById('tools-route').hidden=m!=='route';
+  map.getContainer().classList.toggle('drawing',m!=='edit');
+  selVia=null;
+  render();
+  if(A&&B) solveAll(); else { drawCands(); candPanel(); strip(); }
+}
+for(const k in MODES) document.getElementById(MODES[k]).onclick=(function(k){return function(){setMode(k);};})(k);
+
+document.getElementById('end-end').onclick=function(){
+  appendTo='end';
+  document.getElementById('end-end').classList.add('on');
+  document.getElementById('end-start').classList.remove('on');
+};
+document.getElementById('end-start').onclick=function(){
+  appendTo='start';
+  document.getElementById('end-start').classList.add('on');
+  document.getElementById('end-end').classList.remove('on');
+};
+
+document.getElementById('new-path').onclick=function(){ save(); newPath(); selVert=null; setMode('add'); };
+document.getElementById('undo').onclick=undo;
+document.getElementById('clear').onclick=function(){
+  if(!paths.length) return;
+  save(); paths=[]; activeId=null; selVert=null; A=B=null;
+  clearRoute(); drawPins(); touch();
+};
+snapEl.oninput=function(e){
+  document.getElementById('snap-out').textContent=e.target.value+' m';
+  dirty=true; if(A&&B) solveAll();
+};
+
+document.addEventListener('keydown',function(e){
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  if((e.key==='Delete'||e.key==='Backspace')&&mode==='route'&&selVia){ e.preventDefault(); document.getElementById('del-via').click(); return; }
+  if((e.key==='Delete'||e.key==='Backspace')&&selVert){ e.preventDefault(); document.getElementById('del-pt').click(); }
+  if(e.key==='Escape'){ selVert=null; pickNext=null; selVia=null; render(); if(mode==='route'){ drawCands(); candPanel(); } }
+  if((e.key==='z'||e.key==='Z')&&!e.metaKey&&!e.ctrlKey) undo();
+});
+
+/* ------------------------------ OSM import ------------------------------ */
+const BIKE='cycleway|footway|path|track|pedestrian|steps|bridleway|living_street';
+const ROAD=BIKE+'|residential|service|unclassified|tertiary|secondary|primary|trunk';
+function importOSM(filter,label){
+  if(map.getZoom()<13){ toast('Zoom in a little before loading'); return; }
+  const b=map.getBounds();
+  const bbox=[b.getSouth(),b.getWest(),b.getNorth(),b.getEast()].map(v=>v.toFixed(6)).join(',');
+  const q='[out:json][timeout:30];way["highway"~"^('+filter+')$"]('+bbox+');out geom;';
+  const busy=document.getElementById('busy');
+  busy.textContent='LOADING…'; busy.classList.add('show');
+  fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:q})
+    .then(function(res){ if(!res.ok) throw new Error(res.status); return res.json(); })
+    .then(function(data){
+      const ways=(data.elements||[]).filter(w=>w.geometry&&w.geometry.length>1).slice(0,1500);
+      if(!ways.length){ toast('No '+label+' found in this view'); return; }
+      save();
+      paths=paths.filter(p=>p.source!=='osm');
+      ways.forEach(function(w){
+        paths.push({id:++seq,
+          name:(w.tags&&(w.tags.name||w.tags.highway))||'way',
+          pts:w.geometry.map(g=>({lat:g.lat,lng:g.lon})),
+          color:'#4E7A8F', source:'osm'});
+      });
+      touch();
+      toast('Loaded '+ways.length+' '+label);
+    })
+    .catch(function(){ toast('Could not reach OpenStreetMap — try again in a moment'); })
+    .then(function(){ busy.classList.remove('show'); });
+}
+document.getElementById('imp-bike').onclick=function(){ importOSM(BIKE,'bike & foot paths'); };
+document.getElementById('imp-road').onclick=function(){ importOSM(ROAD,'roads and paths'); };
+
+/* -------------------------------- save/load -------------------------------- */
+document.getElementById('save').onclick=function(){
+  const feats=paths.filter(p=>p.pts.length>1).map(function(p){
+    return {type:'Feature',
+      properties:{name:p.name,color:p.color,source:p.source,length_m:+pathLen(p).toFixed(1)},
+      geometry:{type:'LineString',coordinates:p.pts.map(x=>[x.lng,x.lat])}};
+  });
+  if(!feats.length){ toast('Nothing to save yet'); return; }
+  const url=URL.createObjectURL(new Blob([JSON.stringify({type:'FeatureCollection',features:feats})],{type:'application/json'}));
+  const a=document.createElement('a'); a.href=url; a.download='paths.geojson'; a.click();
+  URL.revokeObjectURL(url);
+};
+document.getElementById('load').onclick=function(){ document.getElementById('file').click(); };
+document.getElementById('file').onchange=function(e){
+  const f=e.target.files[0]; if(!f) return;
+  const r=new FileReader();
+  r.onload=function(){
+    try{
+      const g=JSON.parse(r.result);
+      const feats=g.type==='FeatureCollection'?g.features:[g];
+      save(); let n=0;
+      feats.forEach(function(ft){
+        const geo=ft.geometry||ft, pr=ft.properties||{};
+        const lines = geo.type==='LineString'?[geo.coordinates]:(geo.type==='MultiLineString'?geo.coordinates:[]);
+        lines.forEach(function(c){
+          n++;
+          paths.push({id:++seq, name:pr.name||('Path '+n),
+            pts:c.map(p=>({lat:p[1],lng:p[0]})),
+            color:pr.color||PALETTE[colorSeq++%PALETTE.length],
+            source:pr.source==='osm'?'osm':'drawn'});
+        });
+      });
+      if(n){
+        const last=paths.filter(p=>p.source!=='osm').slice(-1)[0];
+        activeId=last?last.id:null;
+        const bb=L.latLngBounds([].concat.apply([],paths.map(p=>p.pts)));
+        if(bb.isValid()) map.fitBounds(bb,{padding:[50,50]});
+        touch(); toast('Loaded '+n+' paths');
+      } else toast('No lines found in that file');
+    }catch(err){ toast('That file is not valid GeoJSON'); }
+  };
+  r.readAsText(f); e.target.value='';
+};
+
+/* --------------------------------- misc --------------------------------- */
+let tt;
+function toast(m){
+  const t=document.getElementById('toast');
+  t.textContent=m; t.classList.add('show');
+  clearTimeout(tt); tt=setTimeout(function(){ t.classList.remove('show'); },2400);
+}
+map.on('moveend',function(){ kx=Math.cos(rad(map.getCenter().lat)); });
+setMode('add'); clearRoute(); render();
+})();
+</script>
+</body>
+</html>
