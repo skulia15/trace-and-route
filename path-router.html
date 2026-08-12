@@ -278,6 +278,12 @@ function setBase(k){
 setBase('dark');
 document.getElementById('base').onchange = e => { setBase(e.target.value); persist(); };
 
+/* The imported network is thousands of lines and never changes while you draw,
+   so it lives on its own canvas layer underneath and is only repainted when the
+   import itself changes. Drawn paths stay on SVG: there are few of them and
+   they need crisp hit targets. */
+const osmCanvas=L.canvas({padding:0.3});
+const gOSM  =L.layerGroup().addTo(map);
 const gPaths=L.layerGroup().addTo(map);
 const gRoute=L.layerGroup().addTo(map);
 const gVerts=L.layerGroup().addTo(map);
@@ -583,21 +589,37 @@ function dijkstra(src,dst){
 }
 
 /* -------------------------------- rendering -------------------------------- */
+/* cheap fingerprint of the imported set, so the canvas is rebuilt when an import
+   changes and left alone the rest of the time */
+let paintedOSM=null;
+function osmSignature(){
+  let n=0, first='', last='';
+  for(const p of paths) if(p.source==='osm'){ if(!n) first=p.uid||''; last=p.uid||''; n++; }
+  return n+':'+first+':'+last;
+}
+function repaintOSM(force){
+  const sig=osmSignature();
+  if(!force && sig===paintedOSM) return;
+  paintedOSM=sig;
+  gOSM.clearLayers();
+  for(const p of paths){
+    if(p.source!=='osm'||p.pts.length<2) continue;
+    L.polyline(p.pts,{color:'#4E7A8F',weight:2,opacity:.75,renderer:osmCanvas,interactive:false})
+      .addTo(gOSM);
+  }
+}
 function repaintLines(){
+  repaintOSM(false);
   gPaths.clearLayers();
   for(const p of paths){
-    if(p.pts.length<2) continue;
+    if(p.source==='osm'||p.pts.length<2) continue;
     const act=p.id===activeId;
     if(act) L.polyline(p.pts,{color:'#FFFFFF',weight:8,opacity:.16,interactive:false}).addTo(gPaths);
-    L.polyline(p.pts,{
-      color: p.source==='osm' ? '#4E7A8F' : p.color,
-      weight: p.source==='osm' ? 2 : (act?4:3),
-      opacity: p.source==='osm' ? .75 : (act?1:.7)
-    }).addTo(gPaths).on('click', function(ev){
+    L.polyline(p.pts,{color:p.color, weight:act?4:3, opacity:act?1:.7})
+      .addTo(gPaths).on('click', function(ev){
       if(mode==='route') return;
       L.DomEvent.stop(ev);
       if(swallowClick){ swallowClick=false; return; }   /* end of a freehand drag */
-      if(p.source==='osm'){ toast('Imported paths are read-only — draw alongside to extend them'); return; }
       if(mode==='add' && p.id===activeId){ insertOnPath(p, ev.latlng); return; }
       activeId=p.id; selVert=null; render();
     });
@@ -644,6 +666,14 @@ function drawPins(){
   if(B) L.marker(B,{icon:L.divIcon({className:'',html:'<div class="pin">B</div>',iconSize:[20,20],iconAnchor:[10,10]}),zIndexOffset:600}).addTo(gPins);
 }
 
+/* summing every imported way is tens of thousands of haversines, and the panel
+   redraws on every pan — so it is cached against the same fingerprint */
+let osmLenCache={sig:null,len:0};
+function osmTotalLen(osm){
+  const sig=osmSignature();
+  if(osmLenCache.sig!==sig) osmLenCache={sig:sig,len:osm.reduce((s,p)=>s+pathLen(p),0)};
+  return osmLenCache.len;
+}
 function panel(){
   const a=active();
   const f=fmt(a? (a.pts.length>1?pathLen(a):0) : null);
@@ -668,7 +698,7 @@ function panel(){
       d.className='p'; d.style.cursor='default';
       d.innerHTML='<span class="sw" style="background:#4E7A8F"></span>'+
         '<span class="nm" style="color:#5C7A88">'+osm.length+' imported paths</span>'+
-        '<span class="mt">'+(osm.reduce((s,p)=>s+pathLen(p),0)/1000).toFixed(1)+' km</span>'+
+        '<span class="mt">'+(osmTotalLen(osm)/1000).toFixed(1)+' km</span>'+
         '<span class="x" title="Remove imported paths">×</span>';
       d.querySelector('.x').onclick=function(e){
         e.stopPropagation(); save();
