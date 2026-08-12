@@ -1,0 +1,5 @@
+# The app is one self-contained file. Everything else in this repo is private
+# working material (specs, plans, notes) and must not be published.
+*
+!path-router.html
+!vercel.json
