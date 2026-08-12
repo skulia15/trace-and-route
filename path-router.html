@@ -2,13 +2,19 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<!-- pinch-zoom stays enabled: the panel's smallest type is 9-11px mono and
+     magnifying it is the user's own remedy (WCAG 1.4.4) -->
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Trace &amp; Route</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
 <style>
   :root{
     --ink:#0B171D; --ink-2:#12242D; --ice:#E4EFF3; --slate:#5C7A88; --line:#1E3A47;
-    --route:#FF3D7F; --pin:#FFC24B; --osm:#4E7A8F;
+    /* --slate is 3.98:1 on the ground — fine for a rule or a dot, below AA for
+       the 9-11px mono this panel is built from. Text takes --slate-text (7.1:1),
+       --slate stays for non-text furniture only. */
+    --slate-text:#93B2C0;
+    --route:#FF3D7F; --pin:#FFC24B; --osm:#4E7A8F; --mint:#4BE0A8;
     --mono: ui-monospace,"SF Mono","Cascadia Mono","Roboto Mono",Menlo,Consolas,monospace;
     --sans: ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
@@ -16,8 +22,15 @@
   html,body{height:100%;margin:0;background:var(--ink);color:var(--ice);font-family:var(--sans);overflow:hidden}
   #map{position:absolute;inset:0}
   .leaflet-container{background:#0B171D}
-  .leaflet-control-attribution{background:rgba(11,23,29,.82)!important;color:var(--slate)!important;font-size:9px!important}
-  .leaflet-control-attribution a{color:var(--slate)!important}
+  .leaflet-control-attribution{background:rgba(11,23,29,.82)!important;color:var(--slate-text)!important;font-size:9px!important}
+  .leaflet-control-attribution a{color:var(--slate-text)!important}
+  .leaflet-control-scale-line{background:rgba(11,23,29,.82)!important;border-color:var(--line)!important;
+    color:var(--slate-text)!important;font-family:var(--mono)!important;font-size:9.5px!important;
+    letter-spacing:.06em;border-radius:2px}
+  .mapbtns a{background:var(--ink-2);color:var(--ice);border-bottom:1px solid var(--line);
+    font-size:15px;line-height:30px;text-align:center;width:30px;height:30px}
+  .mapbtns a:hover{background:#183441;color:var(--ice)}
+  .mapbtns a:last-child{border-bottom:0}
 
   .panel{
     position:absolute;z-index:1000;top:12px;left:12px;width:326px;max-height:calc(100vh - 24px);
@@ -27,7 +40,7 @@
   }
   .panel header{padding:11px 13px 9px;border-bottom:1px solid var(--line);display:flex;align-items:baseline}
   .panel h1{margin:0;font-size:11.5px;font-weight:700;letter-spacing:.17em;text-transform:uppercase}
-  .panel header span{font-family:var(--mono);font-size:9.5px;color:var(--slate);letter-spacing:.1em;margin-left:auto}
+  .panel header span{font-family:var(--mono);font-size:9.5px;color:var(--slate-text);letter-spacing:.1em;margin-left:auto}
   .panel header .prec{margin-left:7px;padding:1px 5px;border-radius:2px;font-weight:700;
                       background:var(--line);color:var(--ice)}
   .panel header .prec.on{background:var(--pin);color:#3A2600}
@@ -35,33 +48,67 @@
   /* on a phone the panel would otherwise cover most of the map, which is the
      one thing you need to see while tracing */
   .fold{margin-left:8px;padding:1px 6px;font-size:11px;line-height:1.2;background:transparent;
-        border:1px solid var(--line);color:var(--slate)}
+        border:1px solid var(--line);color:var(--slate-text)}
   .fold:hover{color:var(--ice)}
   .panel.folded .scroll{display:none}
   .panel.folded .fold{transform:rotate(180deg)}
-  .lbl{font-family:var(--mono);font-size:9px;letter-spacing:.19em;text-transform:uppercase;color:var(--slate);margin:0 0 6px}
+  .lbl{display:block;font-family:var(--mono);font-size:9px;letter-spacing:.19em;text-transform:uppercase;
+       color:var(--slate-text);margin:0 0 6px}
   .lbl.mt{margin-top:14px}
+  .lbl .qual,.lbl .rank{letter-spacing:.1em;text-transform:none;opacity:.72}
+  .lbl .qual:before{content:"— "}
 
-  .readout{border:1px solid var(--line);border-radius:2px;margin-bottom:13px}
+  /* settings used once a session fold away instead of competing with the work */
+  .drawer{border-top:1px solid var(--line);margin-top:12px;padding-top:10px}
+  .drawer summary{font-family:var(--mono);font-size:9px;letter-spacing:.19em;text-transform:uppercase;
+                  color:var(--slate-text);cursor:pointer;list-style:none;padding:2px 0;margin-bottom:0}
+  .drawer summary::-webkit-details-marker{display:none}
+  .drawer summary:before{content:"+ ";color:var(--slate-text)}
+  .drawer[open] summary:before{content:"– "}
+  .drawer summary:hover{color:var(--ice)}
+  .drawer summary:focus-visible{outline:2px solid var(--pin);outline-offset:2px}
+  .drawer[open] summary{margin-bottom:8px}
+  .drawer.danger[open] summary{color:#FF7DA6}
+
+  /* sits above .scroll, so it survives the fold */
+  .readout{border-bottom:1px solid var(--line);flex:none}
   .readout .big{padding:9px 12px 6px;display:flex;align-items:flex-end;gap:6px}
   .num{font-family:var(--mono);font-size:33px;line-height:.9;font-weight:600;letter-spacing:-.02em;font-variant-numeric:tabular-nums}
-  .unit{font-family:var(--mono);font-size:11px;color:var(--slate);padding-bottom:3px}
-  .cap{padding:0 12px 9px;font-family:var(--mono);font-size:10px;color:var(--slate);letter-spacing:.05em;
+  .unit{font-family:var(--mono);font-size:11px;color:var(--slate-text);padding-bottom:3px}
+  .cap{padding:0 12px 9px;font-family:var(--mono);font-size:10px;color:var(--slate-text);letter-spacing:.05em;
        white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .strip{border-top:1px solid var(--line);padding:7px 12px;display:flex;align-items:center;gap:8px;
-         font-family:var(--mono);font-size:10.5px;color:var(--slate);letter-spacing:.06em}
+         font-family:var(--mono);font-size:10.5px;color:var(--slate-text);letter-spacing:.06em}
   .strip b{color:var(--route);font-weight:600;font-variant-numeric:tabular-nums;font-size:12px}
-  .strip.none b{color:var(--slate)}
+  .strip.none b{color:var(--slate-text)}
+
+  /* The comparison: how much longer this line is than the shortest one traced.
+     It is the answer the instrument exists to give, so it sits directly under
+     the measurement rather than in the list. */
+  .cmp{border-top:1px solid var(--line);padding:7px 12px;display:flex;align-items:baseline;gap:8px;
+       font-family:var(--mono);font-size:10.5px;color:var(--slate-text);letter-spacing:.06em}
+  .cmp b{font-size:15px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.01em;color:var(--ice)}
+  .cmp.best b{color:var(--mint);font-size:11px;letter-spacing:.12em}
+  .cmp span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
   button{font-family:var(--sans);font-size:12px;color:var(--ice);background:var(--ink-2);
          border:1px solid var(--line);border-radius:2px;padding:8px 6px;cursor:pointer;
          transition:background .12s,border-color .12s,color .12s}
   button:hover{background:#183441}
-  button:focus-visible{outline:2px solid var(--pin);outline-offset:1px}
+  /* every focusable surface, not just <button> — the select, the slider, the
+     map and Leaflet's own links were falling back to the UA ring */
+  button:focus-visible,select:focus-visible,input:focus-visible,
+  [role=option]:focus-visible,a:focus-visible,#map:focus-visible{
+    outline:2px solid var(--pin);outline-offset:1px}
+  ::selection{background:var(--pin);color:#3A2600}
+  .scroll{scrollbar-width:thin;scrollbar-color:var(--line) transparent}
+  .scroll::-webkit-scrollbar{width:9px}
+  .scroll::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
+  .scroll::-webkit-scrollbar-track{background:transparent}
   button.on{background:var(--ice);border-color:var(--ice);color:#0B171D;font-weight:600}
-  button.ghost{background:transparent;font-size:11px;padding:7px 4px;color:var(--slate)}
+  button.ghost{background:transparent;font-size:11px;padding:7px 4px;color:var(--slate-text)}
   button.ghost:hover{color:var(--ice);background:var(--ink-2)}
-  button.ghost:disabled{opacity:.35;cursor:default;background:transparent;color:var(--slate)}
+  button.ghost:disabled{opacity:.35;cursor:default;background:transparent;color:var(--slate-text)}
   button.warn:hover{color:#FF7DA6;border-color:#4A2437}
 
   .g3{display:grid;grid-template-columns:repeat(3,1fr);gap:6px}
@@ -80,10 +127,18 @@
   .sw{width:9px;height:9px;border-radius:50%;flex:none}
   .p .nm{flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .p.sel .nm{font-weight:600}
-  .p .mt{font-family:var(--mono);font-size:10px;color:var(--slate);font-variant-numeric:tabular-nums}
-  .p .x{font-family:var(--mono);font-size:13px;color:var(--slate);padding:0 2px;line-height:1}
-  .p .x:hover{color:#FF7DA6}
-  .empty{padding:14px 10px;text-align:center;font-size:11px;color:var(--slate)}
+  .p .mt{font-family:var(--mono);font-size:11px;color:var(--ice);font-variant-numeric:tabular-nums}
+  /* fixed-width right-aligned column so magnitudes stack and can be scanned */
+  .p .dlt{font-family:var(--mono);font-size:10px;font-variant-numeric:tabular-nums;
+          color:var(--slate-text);min-width:52px;text-align:right}
+  .p.win .dlt{color:var(--mint)}
+  .p.borrowed{cursor:default}
+  .p.borrowed .nm,.p.borrowed .mt{color:var(--slate-text)}
+  .empty{padding:14px 10px;text-align:center;font-size:11px;color:var(--slate-text)}
+  /* the delete affordance is a real button: focusable, named, and big enough to hit */
+  .x{font-family:var(--mono);font-size:14px;line-height:1;color:var(--slate-text);
+     background:transparent;border:0;border-radius:2px;padding:6px 7px;margin:-6px -5px -6px 0;cursor:pointer}
+  .x:hover{color:#FF7DA6;background:#1B2E38}
 
   .row{display:flex;align-items:center;gap:8px;margin-bottom:12px}
   input[type=range]{flex:1;accent-color:var(--ice);height:18px}
@@ -91,7 +146,7 @@
   select{width:100%;font-family:var(--sans);font-size:12px;color:var(--ice);background:var(--ink-2);
          border:1px solid var(--line);border-radius:2px;padding:7px 6px;margin-bottom:12px}
 
-  .hint{font-size:11px;line-height:1.55;color:var(--slate);border-top:1px solid var(--line);padding-top:10px;margin:14px 0 0}
+  .hint{font-size:11px;line-height:1.55;color:var(--slate-text);border-top:1px solid var(--line);padding-top:10px;margin:14px 0 0}
   .hint b{color:var(--ice);font-weight:600}
   kbd{font-family:var(--mono);font-size:10px;border:1px solid var(--line);border-radius:2px;padding:0 3px;color:var(--ice)}
 
@@ -115,30 +170,60 @@
   .c .nm{flex:1;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .c.sel .nm{font-weight:600}
   .c .len{font-family:var(--mono);font-size:11.5px;font-variant-numeric:tabular-nums;color:var(--ice)}
-  .c .dlt{font-family:var(--mono);font-size:9.5px;font-variant-numeric:tabular-nums;color:var(--slate);min-width:44px;text-align:right}
+  .c .dlt{font-family:var(--mono);font-size:9.5px;font-variant-numeric:tabular-nums;color:var(--slate-text);min-width:44px;text-align:right}
   .c.win .dlt{color:#4BE0A8}
-  .c .x{font-family:var(--mono);font-size:13px;color:var(--slate);padding:0 2px;line-height:1}
-  .c .x:hover{color:#FF7DA6}
-  .c .bad{font-family:var(--mono);font-size:8.5px;letter-spacing:.12em;color:#0B171D;background:#4BE0A8;
-          padding:1px 4px;border-radius:2px;font-weight:700}
+  .c .dlt{color:var(--slate-text)}
+  /* raised off 8.5px: the verdict was the smallest text in the app */
+  .bad{font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:#0B171D;background:var(--mint);
+       padding:2px 5px;border-radius:2px;font-weight:700;white-space:nowrap}
   .c.err .len{color:#FF7DA6;font-size:10px}
 
   .via{width:11px;height:11px;border-radius:2px;background:var(--ice);border:2px solid #0B171D;
        box-shadow:0 1px 3px rgba(0,0,0,.6);transform:rotate(45deg)}
   .via.sel{background:var(--pin);width:14px;height:14px;box-shadow:0 0 0 4px rgba(255,194,75,.26)}
 
+  .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
   .toast{position:absolute;z-index:1200;bottom:20px;left:50%;transform:translateX(-50%);
          background:var(--ink-2);border:1px solid var(--line);border-left:2px solid var(--pin);
-         padding:8px 14px;font-size:12px;border-radius:2px;opacity:0;pointer-events:none;transition:opacity .2s}
+         padding:8px 14px;font-size:12px;border-radius:2px;opacity:0;pointer-events:none;
+         max-width:min(520px,calc(100vw - 32px));transition:opacity .2s}
   .toast.show{opacity:1}
   .busy{position:absolute;z-index:1200;top:12px;right:60px;background:var(--ink-2);border:1px solid var(--line);
-        padding:7px 12px;font-family:var(--mono);font-size:10.5px;letter-spacing:.1em;border-radius:2px;display:none}
-  .busy.show{display:block}
+        padding:6px 6px 6px 12px;font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;
+        border-radius:2px;display:none;align-items:center;gap:10px}
+  .busy.show{display:flex}
+  .busy-x{font-family:var(--mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+          padding:4px 8px;background:transparent;border:1px solid var(--line);color:var(--slate-text)}
+  .busy-x:hover{color:#FF7DA6;border-color:#4A2437;background:transparent}
+
+  /* consent, inline over the map rather than a modal — nothing is interrupted
+     and the area under discussion stays visible behind it */
+  .ask{position:absolute;z-index:1250;left:50%;bottom:26px;transform:translateX(-50%);
+       width:min(420px,calc(100vw - 32px));background:rgba(11,23,29,.96);border:1px solid var(--line);
+       border-radius:2px;box-shadow:0 18px 44px rgba(0,0,0,.55);backdrop-filter:blur(10px);
+       padding:13px;display:none}
+  .ask.show{display:block}
+  .ask p{margin:0 0 11px;font-size:12.5px;line-height:1.5}
+  .ask p span{color:var(--slate-text);font-family:var(--mono);font-size:10.5px;letter-spacing:.04em}
+  .ask div{display:flex;gap:6px;justify-content:flex-end}
+  .ask button{min-width:96px}
   .drawing{cursor:crosshair}
 
   @media (max-width:720px){
-    .panel{top:auto;bottom:0;left:0;right:0;width:auto;max-height:64vh;border-radius:0;border-left:0;border-right:0;border-bottom:0}
+    .panel{top:auto;bottom:0;left:0;right:0;width:auto;max-height:72vh;border-radius:0;border-left:0;border-right:0;border-bottom:0}
+    /* folded on a phone still shows the number, because that is the product */
+    .panel.folded{max-height:none}
     .num{font-size:27px}
+    /* thumb-sized targets where a finger is the only input: 44px minimum */
+    button{padding:14px 8px;min-height:44px}
+    button.ghost{padding:14px 6px;font-size:12px;min-height:44px}
+    .seg button{padding:14px 6px;min-height:44px}
+    .fold{padding:12px 16px;font-size:14px;min-height:44px}
+    select{padding:13px 8px;min-height:44px}
+    .x{padding:13px 14px;font-size:16px;min-height:44px}
+    .p,.c{padding:13px 9px;min-height:44px}
+    .drawer summary{padding:12px 0;min-height:44px;display:flex;align-items:center}
+    input[type=range]{height:44px}
   }
   @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
@@ -146,35 +231,43 @@
 <body>
 <div id="map"></div>
 <div class="toast" id="toast"></div>
-<div class="busy" id="busy">LOADING…</div>
+<div class="busy" id="busy"></div>
+<div class="ask" id="ask" role="dialog" aria-live="polite" aria-label="Load street network"></div>
+<!-- announcements for state that was previously only colour, motion or a toast -->
+<div id="sr" class="sr" role="status" aria-live="polite"></div>
 
 <section class="panel">
   <header><h1>Trace &amp; Route</h1><span id="tag">ADD</span><span class="prec" id="prec-tag">NETWORK</span>
     <button class="fold" id="fold" aria-label="Collapse the panel" aria-expanded="true">▾</button></header>
+
+  <!-- The readout lives outside .scroll so that folding the panel on a phone
+       hides the settings and keeps the measurement, which is the one thing that
+       must never leave the screen. -->
+  <div class="readout" role="status" aria-live="polite">
+    <div class="big"><span class="num" id="plen">0</span><span class="unit" id="punit">m</span></div>
+    <div class="cap" id="pcap">No path yet</div>
+    <div class="cmp" id="cmp" hidden></div>
+    <div class="strip none" id="strip">ROUTE <b id="rlen">—</b><span id="rcap">not set</span></div>
+  </div>
+
   <div class="scroll">
 
-    <div class="readout">
-      <div class="big"><span class="num" id="plen">0</span><span class="unit" id="punit">m</span></div>
-      <div class="cap" id="pcap">No path yet</div>
-      <div class="strip none" id="strip">ROUTE <b id="rlen">—</b><span id="rcap">not set</span></div>
-    </div>
-
-    <div class="seg">
-      <button id="m-add" class="on">Add points</button>
-      <button id="m-edit">Edit points</button>
-      <button id="m-route">Route</button>
+    <div class="seg" role="group" aria-label="Mode">
+      <button id="m-add" class="on" aria-pressed="true">Add points</button>
+      <button id="m-edit" aria-pressed="false">Edit points</button>
+      <button id="m-route" aria-pressed="false">Route</button>
     </div>
 
     <div id="tools-add">
-      <p class="lbl">Attach new points to</p>
-      <div class="g2 mb">
-        <button id="end-end" class="on">End of path</button>
-        <button id="end-start">Start of path</button>
+      <p class="lbl" id="lbl-input">Input</p>
+      <div class="seg" role="group" aria-labelledby="lbl-input">
+        <button id="in-click" class="on" aria-pressed="true">Click points</button>
+        <button id="in-free" aria-pressed="false">Freehand drag</button>
       </div>
-      <p class="lbl">Input</p>
-      <div class="seg">
-        <button id="in-click" class="on">Click points</button>
-        <button id="in-free">Freehand drag</button>
+      <p class="lbl" id="lbl-attach">Attach new points to</p>
+      <div class="seg" role="group" aria-labelledby="lbl-attach">
+        <button id="end-end" class="on" aria-pressed="true">End of path</button>
+        <button id="end-start" aria-pressed="false">Start of path</button>
       </div>
     </div>
 
@@ -191,7 +284,7 @@
         <button id="set-b">Set finish</button>
       </div>
       <p class="lbl">Options from A to B</p>
-      <div class="cands" id="clist"><div class="empty">Place a start and a finish</div></div>
+      <div class="cands" id="clist" role="listbox" aria-label="Options from A to B"><div class="empty">Place a start and a finish</div></div>
       <div class="g3 mb">
         <button class="ghost" id="c-new">Variant</button>
         <button class="ghost" id="del-via" disabled>Drop via</button>
@@ -199,26 +292,30 @@
       </div>
     </div>
 
-    <p class="lbl">Paths</p>
-    <div class="paths" id="list"><div class="empty">Click the map to start your first path</div></div>
+    <p class="lbl" id="lbl-paths">Traced paths <span class="rank" id="rank-note"></span></p>
+    <div class="paths" id="list" role="listbox" aria-labelledby="lbl-paths">
+      <div class="empty">Click the map to start your first path</div>
+    </div>
     <div class="g2" style="margin-top:6px">
       <button class="ghost" id="new-path">New path</button>
       <button class="ghost" id="undo">Undo</button>
     </div>
 
-    <p class="lbl mt">Measurement mode</p>
-    <div class="seg">
-      <button id="pm-net" class="on">Network</button>
-      <button id="pm-prec">Precision</button>
+    <p class="lbl mt" id="lbl-mm">Measurement mode</p>
+    <div class="seg" role="group" aria-labelledby="lbl-mm">
+      <button id="pm-net" class="on" aria-pressed="true">Network</button>
+      <button id="pm-prec" aria-pressed="false">Precision</button>
     </div>
 
-    <p class="lbl">Junction snap</p>
+    <!-- Named for what it actually governs. It fuses nodes in the routing
+         graph; it never moves a point the user placed. -->
+    <p class="lbl">Junction tolerance <span class="qual">routing only</span></p>
     <div class="row">
-      <input type="range" id="snap" min="1" max="40" value="10" aria-label="Junction snap radius in metres">
+      <input type="range" id="snap" min="1" max="40" value="10" aria-label="Junction tolerance in metres, used for routing only">
       <output id="snap-out">10 m</output>
     </div>
 
-    <p class="lbl">Basemap</p>
+    <label class="lbl" for="base">Basemap</label>
     <select id="base">
       <option value="street">Street — OpenStreetMap</option>
       <option value="topo">Terrain — OpenTopoMap</option>
@@ -227,25 +324,33 @@
       <option value="sat">Satellite — Esri</option>
     </select>
 
-    <p class="lbl">Existing paths from OpenStreetMap</p>
-    <div class="g2 mb">
-      <button class="ghost" id="imp-bike">Load bike &amp; foot</button>
-      <button class="ghost" id="imp-road">Load all roads</button>
-    </div>
-    <div class="g3 mb">
-      <button class="ghost" id="save">GeoJSON</button>
-      <button class="ghost" id="gpx">GPX</button>
-      <button class="ghost" id="load">Load</button>
-    </div>
-    <div class="g2">
-      <button class="ghost warn" id="clear">Clear paths</button>
-      <button class="ghost warn" id="wipe">Erase saved</button>
-    </div>
-    <input type="file" id="file" accept=".json,.geojson,.gpx,application/json,application/gpx+xml" hidden>
-    <div class="g2" style="margin-top:6px">
-      <button class="ghost" id="locate">Find me</button>
-      <button class="ghost" id="fit">Fit to paths</button>
-    </div>
+    <!-- Everything below is used at most once a session, so it folds away
+         instead of competing with the work. -->
+    <details class="drawer">
+      <summary>Street network from OpenStreetMap</summary>
+      <div class="g2">
+        <button class="ghost" id="imp-bike">Load bike &amp; foot</button>
+        <button class="ghost" id="imp-road">Load all roads</button>
+      </div>
+    </details>
+
+    <details class="drawer">
+      <summary>Files</summary>
+      <div class="g3">
+        <button class="ghost" id="save">GeoJSON</button>
+        <button class="ghost" id="gpx">GPX</button>
+        <button class="ghost" id="load">Load</button>
+      </div>
+      <input type="file" id="file" accept=".json,.geojson,.gpx,application/json,application/gpx+xml" hidden>
+    </details>
+
+    <details class="drawer danger">
+      <summary>Erase</summary>
+      <div class="g2">
+        <button class="ghost warn" id="clear">Clear paths</button>
+        <button class="ghost warn" id="wipe">Erase saved copy</button>
+      </div>
+    </details>
 
     <p class="hint" id="hint"></p>
   </div>
@@ -343,19 +448,34 @@ function simplifyDP(pts,tolM){
   }
   return pts.filter((p,i)=>keep[i]);
 }
+/* Metres, always. The product exists to resolve differences of a few metres
+   between two lines; `(m/1000).toFixed(2)` throws away 10 m of that above a
+   kilometre, which is coarser than the thing being measured. Thin space groups
+   the thousands so 4163 stays readable without becoming 4.16. */
 function fmt(m){
   if(m==null) return ['—',''];
-  return m<1000 ? [String(Math.round(m)),'m'] : [(m/1000).toFixed(2),'km'];
+  return [Math.round(m).toLocaleString('en-GB').replace(/,/g,' '),'m'];
+}
+/* signed, for a difference against another line */
+function fmtDelta(m){
+  const r=Math.round(m);
+  if(r===0) return '±0 m';
+  return (r>0?'+':'−')+Math.abs(r).toLocaleString('en-GB').replace(/,/g,' ')+' m';
 }
 
 /* --------------------------------- state --------------------------------- */
-const PALETTE=['#37D6BE','#FFC24B','#8FA6FF','#FF9F6E','#C48FFF','#7CE58A'];
+/* Neither accent may appear here. Survey Amber is what a fixed point looks like
+   (the A/B pins), Verdict Mint means "this is the shortest" and nothing else —
+   a drawn path wearing either colour makes both rules unreadable. The old teal
+   sat close enough to mint on satellite imagery to be mistaken for it, so it is
+   shifted cool and blue. */
+const PALETTE=['#4FC3E8','#8FA6FF','#FF9F6E','#C48FFF','#B6E04B'];
 let paths=[], activeId=null, seq=0, colorSeq=0;
 let mode='add', appendTo='end', inputMode='click';
 let selVert=null;
 let A=null, B=null, pickNext=null;
 let dirty=true, graph=null;
-let history=[];
+let history=[], redoStack=[];
 
 /* Precision mode exists because a 10 m snap welds a left-side and a right-side
    trace of the same street into one line, which destroys the measurement. */
@@ -382,7 +502,17 @@ const byId=id=>paths.find(p=>p.id===id);
 /* Undo covers the routing work too: deleting an option or dropping a via was
    otherwise unrecoverable. Candidates are stored by their vias, as everywhere
    else — never by their solved geometry. */
+/* Screen-reader announcements for things that only existed as colour or motion:
+   the solved distance, a finished import, a nudged point. Kept off the readout's
+   own live region so a via drag does not machine-gun the speech queue. */
+function announce(msg){
+  const el=document.getElementById('sr');
+  if(!el) return;
+  el.textContent='';
+  setTimeout(function(){ el.textContent=msg; },40);
+}
 function save(){
+  redoStack.length=0;                 /* a new action forks the timeline */
   history.push(JSON.stringify({
     paths:paths,
     cands:cands.map(function(c){ return {id:c.id,uid:c.uid,name:c.name,color:c.color,vias:c.vias}; }),
@@ -390,10 +520,26 @@ function save(){
   }));
   if(history.length>50) history.shift();
 }
+function snapNow(){
+  return JSON.stringify({
+    paths:paths,
+    cands:cands.map(function(c){ return {id:c.id,uid:c.uid,name:c.name,color:c.color,vias:c.vias}; }),
+    A:A, B:B, activeId:activeId, activeCand:activeCand
+  });
+}
+function redo(){
+  const s=redoStack.pop(); if(!s){ toast('Nothing to redo'); return; }
+  history.push(snapNow());
+  restoreSnapshot(JSON.parse(s));
+  toast('Redone');
+}
 function undo(){
   const s=history.pop(); if(!s){ toast('Nothing to undo'); return; }
+  redoStack.push(snapNow());
   /* restores a previous snapshot verbatim — no re-derivation of point arrays */
-  const st=JSON.parse(s);
+  restoreSnapshot(JSON.parse(s));
+}
+function restoreSnapshot(st){
   paths=st.paths||[];
   if(!byId(st.activeId)) activeId = paths.length?paths[paths.length-1].id:null; else activeId=st.activeId;
   cands=(st.cands||[]).map(function(c){
@@ -597,14 +743,20 @@ function osmSignature(){
   for(const p of paths) if(p.source==='osm'){ if(!n) first=p.uid||''; last=p.uid||''; n++; }
   return n+':'+first+':'+last;
 }
+/* The Borrowed Data Rule, applied to the basemap as well as to drawn paths:
+   thousands of imported ways at 2px/75% turn the satellite imagery you trace
+   against into a mesh. It stays a faint reference, and disappears entirely when
+   you are zoomed out far enough that it cannot be the thing you are working on. */
+const OSM_MIN_ZOOM=15;
 function repaintOSM(force){
-  const sig=osmSignature();
+  const sig=osmSignature()+':'+(map.getZoom()<OSM_MIN_ZOOM?'hidden':'shown');
   if(!force && sig===paintedOSM) return;
   paintedOSM=sig;
   gOSM.clearLayers();
+  if(map.getZoom()<OSM_MIN_ZOOM) return;
   for(const p of paths){
     if(p.source!=='osm'||p.pts.length<2) continue;
-    L.polyline(p.pts,{color:'#4E7A8F',weight:2,opacity:.75,renderer:osmCanvas,interactive:false})
+    L.polyline(p.pts,{color:'#4E7A8F',weight:1,opacity:.45,renderer:osmCanvas,interactive:false})
       .addTo(gOSM);
   }
 }
@@ -674,57 +826,95 @@ function osmTotalLen(osm){
   if(osmLenCache.sig!==sig) osmLenCache={sig:sig,len:osm.reduce((s,p)=>s+pathLen(p),0)};
   return osmLenCache.len;
 }
+/* the shortest measurable drawn path — the thing every other trace is compared
+   against, and the only path allowed to wear the verdict colour */
+function measurable(){ return paths.filter(p=>p.source!=='osm'&&p.pts.length>1); }
+function shortestDrawn(){
+  return measurable().sort(function(x,y){ return pathLen(x)-pathLen(y); })[0]||null;
+}
 function panel(){
   const a=active();
   const f=fmt(a? (a.pts.length>1?pathLen(a):0) : null);
   const numEl=document.getElementById('plen');
   numEl.textContent = a? f[0] : '0';
-  numEl.style.color = a? (a.source==='osm'?'#4E7A8F':a.color) : '#5C7A88';
+  numEl.style.color = a? (a.source==='osm'?'#4E7A8F':a.color) : 'var(--slate-text)';
   document.getElementById('punit').textContent = a? (f[1]||'m') : 'm';
   document.getElementById('pcap').textContent = a
     ? a.name+' · '+a.pts.length+' point'+(a.pts.length===1?'':'s')+(a.source==='osm'?' · imported':'')
       +(vertHidden?' · '+vertHidden+' handles hidden, zoom in':'')
     : 'No path yet';
 
+  /* The answer the tool exists to give: how much longer is this line than the
+     shortest one you traced. It sits directly under the measurement because it
+     is the number the user actually came for. */
+  const cmp=document.getElementById('cmp'), best=shortestDrawn();
+  const many=measurable().length>1;
+  const note=document.getElementById('rank-note');
+  if(note) note.textContent = many ? '· shortest first' : '';
+  if(a && a.source!=='osm' && a.pts.length>1 && many && best){
+    const diff=pathLen(a)-pathLen(best);
+    cmp.hidden=false;
+    cmp.classList.toggle('best',a.id===best.id);
+    cmp.innerHTML = a.id===best.id
+      ? '<b>SHORTEST</b><span>of '+measurable().length+' traced</span>'
+      : '<b>'+fmtDelta(diff)+'</b><span>longer than '+escapeHtml(best.name)+'</span>';
+  } else { cmp.hidden=true; }
+
   const list=document.getElementById('list');
-  const drawn=paths.filter(p=>p.source!=='osm'), osm=paths.filter(p=>p.source==='osm');
+  const drawn=measurable(), osm=paths.filter(p=>p.source==='osm');
+  const unmeasured=paths.filter(p=>p.source!=='osm'&&p.pts.length<2);
   if(!paths.length){
     list.innerHTML='<div class="empty">Click the map to start your first path</div>';
   } else {
     list.innerHTML='';
-    drawn.forEach(p=>list.appendChild(rowFor(p)));
+    /* sorted shortest first, so the ranking is the reading order */
+    drawn.slice().sort(function(x,y){ return pathLen(x)-pathLen(y); })
+      .forEach(p=>list.appendChild(rowFor(p,best,drawn.length>1)));
+    unmeasured.forEach(p=>list.appendChild(rowFor(p,null,false)));
     if(osm.length){
       const d=document.createElement('div');
-      d.className='p'; d.style.cursor='default';
+      d.className='p borrowed';
       d.innerHTML='<span class="sw" style="background:#4E7A8F"></span>'+
-        '<span class="nm" style="color:#5C7A88">'+osm.length+' imported paths</span>'+
-        '<span class="mt">'+(osmTotalLen(osm)/1000).toFixed(1)+' km</span>'+
-        '<span class="x" title="Remove imported paths">×</span>';
-      d.querySelector('.x').onclick=function(e){
+        '<span class="nm">'+osm.length+' imported ways</span>'+
+        /* the borrowed network is a scale figure, not a measurement — kilometres
+           are the honest unit for "how much road is loaded" */
+        '<span class="mt">'+(osmTotalLen(osm)/1000).toFixed(0)+' km</span>';
+      const b=document.createElement('button');
+      b.className='x'; b.type='button';
+      b.setAttribute('aria-label','Remove all '+osm.length+' imported ways');
+      b.textContent='×';
+      b.onclick=function(e){
         e.stopPropagation(); save();
         paths=paths.filter(p=>p.source!=='osm');
         touch();
       };
+      d.appendChild(b);
       list.appendChild(d);
     }
   }
   document.getElementById('del-pt').disabled = !selVert;
   document.getElementById('split-pt').disabled = !selVert;
 }
-function rowFor(p){
+function rowFor(p,best,ranked){
   const d=document.createElement('div');
-  d.className='p'+(p.id===activeId?' sel':'');
-  const f=fmt(pathLen(p));
+  const win = ranked && best && p.id===best.id;
+  d.className='p'+(p.id===activeId?' sel':'')+(win?' win':'');
+  d.setAttribute('role','option');
+  d.setAttribute('aria-selected',p.id===activeId?'true':'false');
+  d.tabIndex = p.id===activeId ? 0 : -1;
+  const len=p.pts.length>1?pathLen(p):null;
+  const f=fmt(len);
+  let delta='';
+  if(ranked && best && len!=null) delta = win ? '<span class="bad">SHORTEST</span>' : fmtDelta(len-pathLen(best));
   d.innerHTML='<span class="sw" style="background:'+p.color+'"></span>'+
     '<span class="nm">'+escapeHtml(p.name)+'</span>'+
-    '<span class="mt">'+f[0]+f[1]+'</span><span class="x" title="Delete path">×</span>';
-  d.onclick=function(){ activeId=p.id; selVert=null; render(); };
-  d.querySelector('.nm').ondblclick=function(e){
-    e.stopPropagation();
-    const nm=prompt('Name this path',p.name);
-    if(nm){ p.name=nm.slice(0,40); render(); }
-  };
-  d.querySelector('.x').onclick=function(e){
+    '<span class="mt">'+(len==null?'—':f[0]+' '+f[1])+'</span>'+
+    '<span class="dlt">'+delta+'</span>';
+  const del=document.createElement('button');
+  del.className='x'; del.type='button';
+  del.setAttribute('aria-label','Delete '+p.name);
+  del.textContent='×';
+  del.onclick=function(e){
     e.stopPropagation(); save();
     paths=paths.filter(x=>x.id!==p.id);
     if(activeId===p.id){
@@ -733,7 +923,31 @@ function rowFor(p){
     }
     selVert=null; touch();
   };
+  d.appendChild(del);
+  d.onclick=function(){ activeId=p.id; selVert=null; render(); };
+  d.onkeydown=function(e){ rowKeys(e,d,p); };
+  d.querySelector('.nm').ondblclick=function(e){ e.stopPropagation(); renamePath(p); };
   return d;
+}
+function renamePath(p){
+  const nm=prompt('Name this path',p.name);
+  if(nm){ p.name=nm.slice(0,40); stamp(p); render(); persist(); }
+}
+/* keyboard traversal for a list that was previously mouse-only */
+function rowKeys(e,el,p){
+  const rows=[].slice.call(el.parentNode.querySelectorAll('.p[role=option]'));
+  const i=rows.indexOf(el);
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+    e.preventDefault();
+    const n=rows[i+(e.key==='ArrowDown'?1:-1)];
+    if(n){ n.focus(); n.click(); }
+  } else if(e.key==='Enter'||e.key===' '){
+    e.preventDefault(); el.click();
+  } else if(e.key==='F2'){
+    e.preventDefault(); renamePath(p);
+  } else if(e.key==='Delete'||e.key==='Backspace'){
+    e.preventDefault(); el.querySelector('.x').click();
+  }
 }
 function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
@@ -810,7 +1024,9 @@ document.getElementById('split-pt').onclick=function(){
    candidate with no vias is the app's own optimal route. Dragging a via off
    onto a different path is how you turn the app's answer into your own. */
 
-const CPAL=['#FF3D7F','#4BE0A8','#FFD24B','#7FB2FF','#C48FFF','#FF9F6E'];
+/* Verdict Mint is removed: it marks the winner in the list, so a candidate that
+   draws mint on the map while losing by 972 m contradicts the badge beside it. */
+const CPAL=['#FF3D7F','#7FB2FF','#FFD24B','#C48FFF','#FF9F6E','#4FC3E8'];
 let cands=[], activeCand=null, candSeq=0, selVia=null;
 
 function newCand(vias,name){
@@ -858,12 +1074,18 @@ function solveAll(){
   if(!cands.length) newCand([]);
   /* nothing to route on yet? fetch the streets around A and B, then re-solve */
   if(maybeAutoNetwork()){
-    cands.forEach(function(c){ c.legs=[]; c.len=null; c.err='loading the network…'; });
+    cands.forEach(function(c){ c.legs=[]; c.len=null; c.err=netBusy?'loading the network…':'network not loaded'; });
     gRoute.clearLayers(); candPanel(); strip(); return;
   }
   cands.forEach(solveCand);
   drawCands(); candPanel(); strip();
+  const c=curCand();
+  if(c&&c.len!=null&&c.len!==lastSpoken){
+    lastSpoken=c.len;
+    announce(c.name+': '+fmt(c.len).join(' '));
+  }
 }
+let lastSpoken=null;
 const bestCand=()=>cands.filter(c=>c.len!=null).sort((a,b)=>a.len-b.len)[0]||null;
 
 function drawCands(){
@@ -917,7 +1139,10 @@ function strip(){
   }
   const f=fmt(c.len);
   document.getElementById('rlen').textContent=f[0]+' '+f[1];
-  const d = best && best.id!==c.id ? '+'+fmt(c.len-best.len).join('')+' vs best' : (cands.length>1?'shortest':'· '+c.vias.length+' via');
+  const d = best && best.id!==c.id
+    ? fmtDelta(c.len-best.len)+' vs best'
+    : (cands.length>1 ? 'shortest option'
+       : c.vias.length ? c.vias.length+(c.vias.length===1?' via':' vias') : 'direct');
   document.getElementById('rcap').textContent='· '+d;
   s.classList.remove('none');
 }
@@ -937,25 +1162,43 @@ function candPanel(){
       const d=document.createElement('div');
       d.className='c'+(c.id===activeCand?' sel':'')+(win?' win':'')+(c.err?' err':'');
       const f=fmt(c.len);
-      const delta = c.err ? '' : (win ? (cands.length>1?'<span class="bad">BEST</span>':'')
-                                     : '+'+fmt(c.len-best.len).join(''));
+      const delta = c.err ? '' : (win ? (cands.length>1?'<span class="bad">SHORTEST</span>':'')
+                                     : fmtDelta(c.len-best.len));
+      d.setAttribute('role','option');
+      d.setAttribute('aria-selected',c.id===activeCand?'true':'false');
+      d.tabIndex = c.id===activeCand ? 0 : -1;
       d.innerHTML='<span class="sw" style="background:'+c.color+'"></span>'+
         '<span class="nm">'+escapeHtml(c.name)+'</span>'+
         '<span class="len">'+(c.err?escapeHtml(c.err):f[0]+' '+f[1])+'</span>'+
-        '<span class="dlt">'+delta+'</span>'+
-        '<span class="x" title="Delete option">×</span>';
-      d.onclick=function(){ activeCand=c.id; selVia=null; drawCands(); candPanel(); strip(); };
-      d.querySelector('.nm').ondblclick=function(e){
-        e.stopPropagation();
-        const nm=prompt('Name this option',c.name);
-        if(nm){ c.name=nm.slice(0,40); candPanel(); }
-      };
-      d.querySelector('.x').onclick=function(e){
+        '<span class="dlt">'+delta+'</span>';
+      const del=document.createElement('button');
+      del.className='x'; del.type='button';
+      del.setAttribute('aria-label','Delete option '+c.name);
+      del.textContent='×';
+      del.onclick=function(e){
         e.stopPropagation();
         save();
         cands=cands.filter(x=>x.id!==c.id);
         if(activeCand===c.id) activeCand=cands.length?cands[cands.length-1].id:null;
         selVia=null; drawCands(); candPanel(); strip();
+      };
+      d.appendChild(del);
+      d.onclick=function(){ activeCand=c.id; selVia=null; drawCands(); candPanel(); strip(); };
+      d.onkeydown=function(e){
+        const rows=[].slice.call(list.querySelectorAll('.c[role=option]'));
+        const i=rows.indexOf(d);
+        if(e.key==='ArrowDown'||e.key==='ArrowUp'){
+          e.preventDefault();
+          const n=rows[i+(e.key==='ArrowDown'?1:-1)];
+          if(n){ n.focus(); n.click(); }
+        } else if(e.key==='Enter'||e.key===' '){ e.preventDefault(); d.click(); }
+        else if(e.key==='F2'){ e.preventDefault(); const nm=prompt('Name this option',c.name); if(nm){ c.name=nm.slice(0,40); candPanel(); } }
+        else if(e.key==='Delete'||e.key==='Backspace'){ e.preventDefault(); del.click(); }
+      };
+      d.querySelector('.nm').ondblclick=function(e){
+        e.stopPropagation();
+        const nm=prompt('Name this option',c.name);
+        if(nm){ c.name=nm.slice(0,40); candPanel(); persist(); }
       };
       list.appendChild(d);
     });
@@ -992,7 +1235,8 @@ document.getElementById('c-new').onclick=function(){
   save();
   const src=curCand();
   const c=newCand(src?src.vias:[], null);
-  if(src) c.name=src.name+' variant';
+  /* "Optimal variant variant variant" was the old result of copying a copy */
+  if(src) c.name=(src.name.replace(/ \(\d+\)$/,''))+' ('+cands.length+')';
   selVia=null; solveCand(c); drawCands(); candPanel(); strip();
   toast('Drag a via, or click the map, to pull this option onto a different path');
 };
@@ -1012,6 +1256,7 @@ map.on('click', function(ev){
     const i=nearestGraphNode(ev.latlng);
     const g=G();
     const snap = i>=0 ? {lat:g.nodes[i].lat,lng:g.nodes[i].lng} : {lat:ev.latlng.lat,lng:ev.latlng.lng};
+    userPlaced=true;   /* an endpoint moved because the user asked for it */
     if(pickNext==='A'){ A=snap; pickNext=null; drawPins(); clearRoute(); solveAll(); return; }
     if(pickNext==='B'){ B=snap; pickNext=null; drawPins(); clearRoute(); solveAll(); return; }
     if(!A){ A=snap; drawPins(); candPanel(); strip(); return; }
@@ -1102,13 +1347,17 @@ map.on('zoomend moveend',function(){ clearHint(); if(!fhRun){ render(); persist(
 
 const MODES={add:'m-add',edit:'m-edit',route:'m-route'};
 const HINTS={
-  add:'<b>Add points:</b> every click extends the active path. Switch to <b>Freehand drag</b> to press and trace a curve in one go. Click the active line itself to insert a point mid-way. Use <b>New path</b> to start a separate one. The dashed circle is the snap radius — a highlighted point will fuse with your next one.',
-  edit:'<b>Edit points:</b> drag any vertex to move it. Click one to select, then delete it or split the path there. <kbd>Delete</kbd> works too.',
+  add:'<b>Add points:</b> every click extends the active path, exactly where you clicked. Switch to <b>Freehand drag</b> to press and trace a curve in one go. Click the active line itself to insert a point mid-way, or <b>New path</b> to start a separate one. The dashed circle shows the junction tolerance: points inside it are treated as one junction <b>when routing</b>. Your line is never moved.',
+  edit:'<b>Edit points:</b> drag any vertex to move it. Click one to select, then delete it or split the path there. Without a mouse: <kbd>[</kbd> and <kbd>]</kbd> step through the points, arrow keys nudge the selected one (<kbd>Shift</kbd> for ten steps), <kbd>Delete</kbd> removes it.',
   route:'<b>Route:</b> click for the start, click again for the finish — the app loads the street network around them if it needs to, then solves the shortest way. You do not have to draw anything first. Then <b>Variant</b> to copy it, and click or drag a <b>via</b> to pull that copy onto a different path. Every option is listed with its exact distance.'
 };
 function setMode(m){
   mode=m; pickNext=null; selVert=null;
-  for(const k in MODES) document.getElementById(MODES[k]).classList.toggle('on',k===m);
+  for(const k in MODES){
+    const b=document.getElementById(MODES[k]);
+    b.classList.toggle('on',k===m);
+    b.setAttribute('aria-pressed',k===m?'true':'false');
+  }
   document.getElementById('tag').textContent=({add:'ADD',edit:'EDIT',route:'ROUTE'})[m];
   document.getElementById('hint').innerHTML=HINTS[m];
   document.getElementById('tools-add').hidden=m!=='add';
@@ -1121,16 +1370,14 @@ function setMode(m){
 }
 for(const k in MODES) document.getElementById(MODES[k]).onclick=(function(k){return function(){setMode(k);};})(k);
 
-document.getElementById('end-end').onclick=function(){
-  appendTo='end';
-  document.getElementById('end-end').classList.add('on');
-  document.getElementById('end-start').classList.remove('on');
-};
-document.getElementById('end-start').onclick=function(){
-  appendTo='start';
-  document.getElementById('end-start').classList.add('on');
-  document.getElementById('end-end').classList.remove('on');
-};
+/* one helper so every toggle pair reports its state to assistive tech */
+function setPair(onId,offId){
+  const on=document.getElementById(onId), off=document.getElementById(offId);
+  on.classList.add('on'); on.setAttribute('aria-pressed','true');
+  off.classList.remove('on'); off.setAttribute('aria-pressed','false');
+}
+document.getElementById('end-end').onclick=function(){ appendTo='end'; setPair('end-end','end-start'); persist(); };
+document.getElementById('end-start').onclick=function(){ appendTo='start'; setPair('end-start','end-end'); persist(); };
 
 const panelEl=document.querySelector('.panel');
 function setFolded(on){
@@ -1145,8 +1392,7 @@ if(window.matchMedia&&window.matchMedia('(max-width:720px)').matches) setFolded(
 
 function setInput(k){
   inputMode=k;
-  document.getElementById('in-click').classList.toggle('on',k==='click');
-  document.getElementById('in-free').classList.toggle('on',k==='free');
+  setPair(k==='free'?'in-free':'in-click', k==='free'?'in-click':'in-free');
   if(k==='free') toast('Press and drag on the map to trace');
   persist();
 }
@@ -1156,8 +1402,7 @@ document.getElementById('in-free').onclick=function(){ setInput('free'); };
 /* ----------------------------- precision mode ----------------------------- */
 function setPrecision(on){
   precision=!!on;
-  document.getElementById('pm-net').classList.toggle('on',!precision);
-  document.getElementById('pm-prec').classList.toggle('on',precision);
+  setPair(precision?'pm-prec':'pm-net', precision?'pm-net':'pm-prec');
   const tag=document.getElementById('prec-tag');
   tag.textContent=precision?'PRECISION':'NETWORK';
   tag.classList.toggle('on',precision);
@@ -1190,13 +1435,62 @@ snapEl.oninput=function(e){
   persist();
 };
 
+/* Selecting and nudging a point without a mouse. Every one of the shortcuts
+   below used to act on a selection that only a click could make, which made
+   them unreachable in a keyboard-only session. */
+function selectVertex(step){
+  const a=active();
+  if(!a||!a.pts.length) return false;
+  const n=a.pts.length;
+  let i = (selVert&&selVert.pathId===a.id) ? selVert.i+step : (step>0?0:n-1);
+  if(i<0) i=n-1; if(i>=n) i=0;
+  selVert={pathId:a.id,i:i};
+  map.panInside(L.latLng(a.pts[i]),{padding:[60,60]});
+  render();
+  announce(a.name+' point '+(i+1)+' of '+n);
+  return true;
+}
+/* one step is roughly one screen pixel, so nudging feels the same at any zoom */
+function nudgeVertex(dx,dy,big){
+  const a=active();
+  if(!a||!selVert||selVert.pathId!==a.id) return false;
+  const k=big?10:1;
+  const pt=map.latLngToContainerPoint(L.latLng(a.pts[selVert.i]));
+  const ll=map.containerPointToLatLng(L.point(pt.x+dx*k,pt.y+dy*k));
+  save();
+  a.pts[selVert.i]={lat:ll.lat,lng:ll.lng};   /* moves only the selected point */
+  stamp(a); touch();
+  announce('Moved to '+fmt(pathLen(a)).join(' '));
+  return true;
+}
 document.addEventListener('keydown',function(e){
-  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT') return;
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT'||e.target.tagName==='TEXTAREA') return;
+  const inList=e.target.getAttribute&&e.target.getAttribute('role')==='option';
+  if((e.key==='z'||e.key==='Z')&&(e.metaKey||e.ctrlKey)){ e.preventDefault(); e.shiftKey?redo():undo(); return; }
+  if((e.key==='y'||e.key==='Y')&&(e.metaKey||e.ctrlKey)){ e.preventDefault(); redo(); return; }
+  if(e.metaKey||e.ctrlKey||e.altKey) return;
   if((e.key==='Delete'||e.key==='Backspace')&&mode==='route'&&selVia){ e.preventDefault(); document.getElementById('del-via').click(); return; }
-  if((e.key==='Delete'||e.key==='Backspace')&&selVert){ e.preventDefault(); document.getElementById('del-pt').click(); }
-  if(e.key==='Escape'){ selVert=null; pickNext=null; selVia=null; render(); if(mode==='route'){ drawCands(); candPanel(); } }
-  if((e.key==='z'||e.key==='Z')&&!e.metaKey&&!e.ctrlKey) undo();
+  if((e.key==='Delete'||e.key==='Backspace')&&selVert&&!inList){ e.preventDefault(); document.getElementById('del-pt').click(); return; }
+  if(e.key==='Escape'){ selVert=null; pickNext=null; selVia=null; render(); if(mode==='route'){ drawCands(); candPanel(); } return; }
+  if((e.key==='z'||e.key==='Z')){ undo(); return; }
+  if(inList) return;                         /* the list owns its own arrow keys */
+  if(mode!=='route'){
+    if(e.key==='Tab'&&!e.shiftKey&&selectVertexIntent(e)) return;
+    if(e.key===']'||e.key==='.'){ e.preventDefault(); selectVertex(1); return; }
+    if(e.key==='['||e.key===','){ e.preventDefault(); selectVertex(-1); return; }
+    if(selVert){
+      const d={ArrowLeft:[-1,0],ArrowRight:[1,0],ArrowUp:[0,-1],ArrowDown:[0,1]}[e.key];
+      if(d){ e.preventDefault(); nudgeVertex(d[0],d[1],e.shiftKey); return; }
+    }
+  }
 });
+/* Tab into the point sequence only when the map itself holds focus, so tabbing
+   through the panel is not hijacked */
+function selectVertexIntent(e){
+  if(document.activeElement!==map.getContainer()) return false;
+  e.preventDefault();
+  return selectVertex(1);
+}
 
 /* ------------------------------ OSM import ------------------------------ */
 const BIKE='cycleway|footway|path|track|pedestrian|steps|bridleway|living_street';
@@ -1233,15 +1527,29 @@ function overpassOrder(){
   /* whatever worked last time on this network goes first */
   return [good].concat(OVERPASS.filter(u=>u!==good));
 }
+/* one shared abort handle, so the busy chip's Cancel can stop a fetch that is
+   already in flight rather than leaving the user watching a counter */
+let netAbort=null, netCancelled=false;
+/* Cancel means cancel: it stops the request in flight, and every later stage —
+   the mirror rotation, the direct OSM API, the tile loop — checks this before
+   starting, so pressing it once does not just hand off to the next attempt. */
+function cancelNetwork(){
+  netCancelled=true;
+  if(netAbort){ try{ netAbort.abort(); }catch(e){} }
+  busyStop();
+  toast('Stopped — nothing was loaded');
+}
 function overpass(q,onTry){
   let last='no endpoint answered', sawEmpty=null;
   const order=overpassOrder();
   function attempt(i){
+    if(netCancelled) return Promise.reject(new Error('cancelled'));
     /* every endpoint said "nothing here" — believe it only once they all agree */
     if(i>=order.length*2) return sawEmpty ? Promise.resolve(sawEmpty) : Promise.reject(new Error(last));
     const url=order[i%order.length];
     if(onTry) onTry(i+1,order.length*2);
     const ctl=('AbortController' in self)?new AbortController():null;
+    netAbort=ctl;
     const timer=setTimeout(function(){ if(ctl) ctl.abort(); },OVERPASS_TIMEOUT_MS);
     return fetch(url,{method:'POST',body:q,signal:ctl?ctl.signal:undefined})
       .then(function(res){
@@ -1297,8 +1605,10 @@ function osmApiTiles(bbox){
   return out;
 }
 function osmApiTile(box,filter,seen,out){
+  if(netCancelled) return Promise.reject(new Error('cancelled'));
   const url=OSM_API+'?bbox='+[box[1],box[0],box[3],box[2]].map(v=>v.toFixed(6)).join(',');
   const ctl=('AbortController' in self)?new AbortController():null;
+  netAbort=ctl;
   const timer=setTimeout(function(){ if(ctl) ctl.abort(); },OVERPASS_TIMEOUT_MS*3);
   return fetch(url,{signal:ctl?ctl.signal:undefined})
     .then(function(res){ if(!res.ok) throw new Error('OSM API '+res.status); return res.text(); })
@@ -1341,10 +1651,12 @@ function osmApiWays(filter,bbox,onTile){
   let ok=0;
   return tiles.reduce(function(chain,box,i){
     return chain.then(function(){
+      if(netCancelled) return;
       if(onTile) onTile(i+1,tiles.length);
       return osmApiTile(box,filter,seen,out).then(function(){ ok++; },function(){ /* skip a bad tile */ });
     });
   },Promise.resolve()).then(function(){
+    if(netCancelled) throw new Error('cancelled');
     if(!ok) throw new Error('the OSM API did not answer either');
     return out;
   });
@@ -1391,7 +1703,6 @@ function importOSM(filter,label,bbox,opts){
   }
   bbox=gridBbox(bbox);
   const fresh=!!(opts&&opts.fresh);
-  const busy=document.getElementById('busy');
   const useCache=function(hit,note){
     applyWays(hit.ways);
     const age=Math.round((Date.now()-hit.savedAt)/86400000);
@@ -1402,8 +1713,11 @@ function importOSM(filter,label,bbox,opts){
   const fromNetwork=function(){
     const q='[out:json][timeout:25];way["highway"~"^('+filter+')$"]('+
       bbox.map(v=>v.toFixed(6)).join(',')+');out geom;';
-    busy.textContent='LOADING NETWORK…'; busy.classList.add('show');
-    return overpass(q,function(n,of){ busy.textContent='LOADING NETWORK… '+n+'/'+of; })
+    /* elapsed seconds, not a retry index — "4/10" counting backwards to "1/8"
+       under a new label is not progress, it is bookkeeping shown by mistake */
+    netCancelled=false;
+    busyStart('Loading the street network');
+    return overpass(q,function(){ })
       .then(function(data){
         const ways=(data.elements||[]).filter(w=>w.geometry&&w.geometry.length>1).slice(0,3000)
           .map(function(w){
@@ -1417,14 +1731,14 @@ function importOSM(filter,label,bbox,opts){
         return ways.length;
       })
       .catch(function(err){
+        if(netCancelled) return 0;
         /* every Overpass instance refused — try the main OSM API, then fall
            back to whatever copy of this area is already on the device */
-        busy.textContent='TRYING OPENSTREETMAP DIRECTLY…';
+        busyStart('Asking OpenStreetMap directly');
         /* cache under the box actually fetched, never the one asked for, or a
            later request would think it already had the wider area */
         const small=shrinkForOsmApi(bbox);
-        return osmApiWays(filter,small,function(n,of){
-          busy.textContent='OPENSTREETMAP DIRECT… '+n+'/'+of;
+        return osmApiWays(filter,small,function(){
         }).then(function(ways){
           if(!ways.length) throw new Error('no ways');
           applyWays(ways);
@@ -1432,6 +1746,7 @@ function importOSM(filter,label,bbox,opts){
           toast('Loaded '+ways.length+' '+label+' from OpenStreetMap directly');
           return ways.length;
         }).catch(function(){
+          if(netCancelled) return 0;
           return netCacheGet(filter,bbox).then(function(hit){
             if(hit&&hit.ways.length) return useCache(hit,'OpenStreetMap is not answering');
             toast('OpenStreetMap did not answer ('+(err.message||'unknown')+') — try again shortly');
@@ -1439,7 +1754,7 @@ function importOSM(filter,label,bbox,opts){
           });
         });
       })
-      .then(function(n){ busy.classList.remove('show'); return n; });
+      .then(function(n){ busyStop(); return n; });
   };
   if(fresh) return fromNetwork();
   return netCacheGet(filter,bbox).then(function(hit){
@@ -1463,11 +1778,14 @@ const AUTO_NET_MAX_SPAN_M=15000;
 function autoNetPad(){
   return Math.min(AUTO_NET_PAD_MAX_M, Math.max(AUTO_NET_PAD_MIN_M, hav(A,B)*AUTO_NET_PAD_FRAC));
 }
-let netBusy=false, netTriedKey='';
+let netBusy=false, netTriedKey='', userPlaced=false;
 function endpointKey(){
   return (A&&B) ? [A.lat,A.lng,B.lat,B.lng].map(v=>v.toFixed(5)).join(',') : '';
 }
 function maybeAutoNetwork(){
+  /* only ever in response to the user placing an endpoint. Restoring a saved
+     A and B on page load must not greet them with a request to fetch a city. */
+  if(!userPlaced) return false;
   if(!A||!B||netBusy) return false;
   const key=endpointKey();
   if(netTriedKey===key) return false;
@@ -1479,9 +1797,15 @@ function maybeAutoNetwork(){
     netTriedKey=key;
     return false;
   }
-  netTriedKey=key; netBusy=true;
-  toast('Loading the street network between your two points…');
-  importOSM(ROAD,'roads and paths',bbox)
+  /* Ask first. This pulls thousands of ways over a shared free service and
+     repaints them across the map you are tracing on; doing that silently on a
+     second click is not a decision the app gets to make. */
+  const km2=(hav({lat:bbox[0],lng:bbox[1]},{lat:bbox[2],lng:bbox[1]})/1000)*
+            (hav({lat:bbox[0],lng:bbox[1]},{lat:bbox[0],lng:bbox[3]})/1000);
+  netTriedKey=key;
+  askNetwork(km2.toFixed(1),function(){
+    netBusy=true;
+    importOSM(ROAD,'roads and paths',bbox)
     .then(function(n){
       netBusy=false;
       if(n){ solveAll(); return; }
@@ -1492,7 +1816,28 @@ function maybeAutoNetwork(){
       candPanel(); strip();
     })
     .catch(function(){ netBusy=false; netTriedKey=''; });
+  },function(){
+    /* declined — say what to do instead, and leave the candidates honest */
+    cands.forEach(function(c){ c.err='no network loaded'; });
+    candPanel(); strip();
+    toast('Left as it is — draw your own paths, or load a network from the panel');
+  });
   return true;
+}
+
+/* An inline consent bar rather than a modal: it interrupts nothing, and the map
+   stays visible behind the decision it is about. */
+function askNetwork(km2,onYes,onNo){
+  const el=document.getElementById('ask');
+  el.innerHTML='<p>Load the street network between your two points?<br>'+
+    '<span>About '+km2+' km² from OpenStreetMap, a few thousand ways drawn under your paths.</span></p>'+
+    '<div><button type="button" id="ask-no" class="ghost">Not now</button>'+
+    '<button type="button" id="ask-yes">Load it</button></div>';
+  el.classList.add('show');
+  const close=function(){ el.classList.remove('show'); el.innerHTML=''; };
+  document.getElementById('ask-yes').onclick=function(){ close(); onYes(); };
+  document.getElementById('ask-no').onclick=function(){ close(); if(onNo) onNo(); };
+  document.getElementById('ask-yes').focus();
 }
 
 /* -------------------------------- save/load -------------------------------- */
@@ -1591,6 +1936,36 @@ document.getElementById('file').onchange=function(e){
   r.readAsText(f); e.target.value='';
 };
 
+/* Viewport actions belong on the map, not in a settings column: they act on the
+   map, and they are reachable there without opening the panel on a phone. */
+const MapBtns=L.Control.extend({
+  options:{position:'topright'},
+  onAdd:function(){
+    const c=L.DomUtil.create('div','leaflet-bar mapbtns');
+    const mk=function(id,glyph,title){
+      const a=L.DomUtil.create('a','',c);
+      a.href='#'; a.innerHTML=glyph; a.title=title;
+      a.setAttribute('role','button'); a.setAttribute('aria-label',title);
+      L.DomEvent.on(a,'click',L.DomEvent.stop).on(a,'click',function(){
+        document.getElementById(id).click();
+      });
+      return a;
+    };
+    mk('locate','◎','Centre the map on my location');
+    mk('fit','⤢','Fit the map to my traced paths');
+    L.DomEvent.disableClickPropagation(c);
+    return c;
+  }
+});
+map.addControl(new MapBtns());
+/* a measuring instrument should show the scale of its own specimen */
+L.control.scale({position:'bottomleft',imperial:false,maxWidth:140}).addTo(map);
+
+const locateBtn=document.createElement('button');
+locateBtn.id='locate'; locateBtn.hidden=true; document.body.appendChild(locateBtn);
+const fitBtn=document.createElement('button');
+fitBtn.id='fit'; fitBtn.hidden=true; document.body.appendChild(fitBtn);
+
 /* Opens on Reykjavík, which is wrong for anyone standing anywhere else. Behind
    a button, so nothing asks for your location just because the page loaded. */
 document.getElementById('locate').onclick=function(){
@@ -1616,6 +1991,35 @@ function toast(m){
   const t=document.getElementById('toast');
   t.textContent=m; t.classList.add('show');
   clearTimeout(tt); tt=setTimeout(function(){ t.classList.remove('show'); },2400);
+}
+
+/* ---------------------------- busy indicator ----------------------------
+   Counts the seconds it has actually been waiting and offers a way out. A
+   minimum on-screen time stops a cache hit strobing the chip for one frame. */
+const BUSY_MIN_MS=350;
+let busyT=null, busyShownAt=0;
+function busyStart(label){
+  const el=document.getElementById('busy');
+  busyShownAt=Date.now();
+  el.innerHTML='<span id="busy-label"></span><button type="button" class="busy-x" id="busy-cancel">Cancel</button>';
+  document.getElementById('busy-cancel').onclick=function(){
+    cancelNetwork();
+    document.getElementById('busy-label').textContent='Stopping…';
+  };
+  const tick=function(){
+    const s=Math.round((Date.now()-busyShownAt)/1000);
+    const lab=document.getElementById('busy-label');
+    if(lab) lab.textContent=label+' · '+s+'s';
+  };
+  tick();
+  clearInterval(busyT); busyT=setInterval(tick,1000);
+  el.classList.add('show');
+}
+function busyStop(){
+  clearInterval(busyT); busyT=null;
+  const el=document.getElementById('busy');
+  const wait=Math.max(0,BUSY_MIN_MS-(Date.now()-busyShownAt));
+  setTimeout(function(){ el.classList.remove('show'); },wait);
 }
 map.on('moveend',function(){ kx=Math.cos(rad(map.getCenter().lat)); });
 
@@ -1754,6 +2158,8 @@ function applyState(st){
   dirty=vDirty=true;
 }
 document.getElementById('wipe').onclick=function(){
+  /* the only action in the app that undo cannot reach, so it asks */
+  if(!confirm('Erase the saved copy on this device?\n\nYour paths, options and cached street network will be gone when you next open the app. What is on screen now stays until you reload.')) return;
   dbWipe().then(function(){ toast('Saved copy erased — this page keeps what is on screen'); })
           .catch(function(){ toast('Nothing saved to erase'); });
 };
