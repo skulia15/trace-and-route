@@ -28,7 +28,17 @@
   .panel header{padding:11px 13px 9px;border-bottom:1px solid var(--line);display:flex;align-items:baseline}
   .panel h1{margin:0;font-size:11.5px;font-weight:700;letter-spacing:.17em;text-transform:uppercase}
   .panel header span{font-family:var(--mono);font-size:9.5px;color:var(--slate);letter-spacing:.1em;margin-left:auto}
+  .panel header .prec{margin-left:7px;padding:1px 5px;border-radius:2px;font-weight:700;
+                      background:var(--line);color:var(--ice)}
+  .panel header .prec.on{background:var(--pin);color:#3A2600}
   .scroll{overflow-y:auto;padding:12px 13px 14px}
+  /* on a phone the panel would otherwise cover most of the map, which is the
+     one thing you need to see while tracing */
+  .fold{margin-left:8px;padding:1px 6px;font-size:11px;line-height:1.2;background:transparent;
+        border:1px solid var(--line);color:var(--slate)}
+  .fold:hover{color:var(--ice)}
+  .panel.folded .scroll{display:none}
+  .panel.folded .fold{transform:rotate(180deg)}
   .lbl{font-family:var(--mono);font-size:9px;letter-spacing:.19em;text-transform:uppercase;color:var(--slate);margin:0 0 6px}
   .lbl.mt{margin-top:14px}
 
@@ -87,9 +97,15 @@
 
   .pin{width:20px;height:20px;border-radius:50%;background:var(--pin);color:#3A2600;
        font:600 11px/20px var(--mono);text-align:center;border:2px solid #0B171D;box-shadow:0 2px 6px rgba(0,0,0,.5)}
+  /* wrapper centres the dot inside the icon box, so the dot can grow with zoom
+     without drifting off the vertex it marks */
+  .vxw{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
   .vx{width:11px;height:11px;border-radius:50%;background:var(--ice);border:2px solid #0B171D;box-shadow:0 1px 3px rgba(0,0,0,.6)}
   .vx.end{background:var(--pin);width:13px;height:13px}
   .vx.sel{background:var(--route);width:15px;height:15px;box-shadow:0 0 0 4px rgba(255,61,127,.28)}
+  .zoom-hi .vx{width:14px;height:14px}
+  .zoom-hi .vx.end{width:16px;height:16px}
+  .zoom-hi .vx.sel{width:19px;height:19px}
 
   .cands{border:1px solid var(--line);border-radius:2px;margin-bottom:8px}
   .c{display:flex;align-items:center;gap:8px;padding:8px 9px;border-bottom:1px solid var(--line);cursor:pointer}
@@ -133,7 +149,8 @@
 <div class="busy" id="busy">LOADING…</div>
 
 <section class="panel">
-  <header><h1>Trace &amp; Route</h1><span id="tag">ADD</span></header>
+  <header><h1>Trace &amp; Route</h1><span id="tag">ADD</span><span class="prec" id="prec-tag">NETWORK</span>
+    <button class="fold" id="fold" aria-label="Collapse the panel" aria-expanded="true">▾</button></header>
   <div class="scroll">
 
     <div class="readout">
@@ -153,6 +170,11 @@
       <div class="g2 mb">
         <button id="end-end" class="on">End of path</button>
         <button id="end-start">Start of path</button>
+      </div>
+      <p class="lbl">Input</p>
+      <div class="seg">
+        <button id="in-click" class="on">Click points</button>
+        <button id="in-free">Freehand drag</button>
       </div>
     </div>
 
@@ -184,7 +206,13 @@
       <button class="ghost" id="undo">Undo</button>
     </div>
 
-    <p class="lbl mt">Junction snap</p>
+    <p class="lbl mt">Measurement mode</p>
+    <div class="seg">
+      <button id="pm-net" class="on">Network</button>
+      <button id="pm-prec">Precision</button>
+    </div>
+
+    <p class="lbl">Junction snap</p>
     <div class="row">
       <input type="range" id="snap" min="1" max="40" value="10" aria-label="Junction snap radius in metres">
       <output id="snap-out">10 m</output>
@@ -204,12 +232,20 @@
       <button class="ghost" id="imp-bike">Load bike &amp; foot</button>
       <button class="ghost" id="imp-road">Load all roads</button>
     </div>
-    <div class="g3">
-      <button class="ghost" id="save">Save</button>
+    <div class="g3 mb">
+      <button class="ghost" id="save">GeoJSON</button>
+      <button class="ghost" id="gpx">GPX</button>
       <button class="ghost" id="load">Load</button>
-      <button class="ghost warn" id="clear">Clear</button>
     </div>
-    <input type="file" id="file" accept=".json,.geojson,application/json" hidden>
+    <div class="g2">
+      <button class="ghost warn" id="clear">Clear paths</button>
+      <button class="ghost warn" id="wipe">Erase saved</button>
+    </div>
+    <input type="file" id="file" accept=".json,.geojson,.gpx,application/json,application/gpx+xml" hidden>
+    <div class="g2" style="margin-top:6px">
+      <button class="ghost" id="locate">Find me</button>
+      <button class="ghost" id="fit">Fit to paths</button>
+    </div>
 
     <p class="hint" id="hint"></p>
   </div>
@@ -240,12 +276,13 @@ function setBase(k){
   baseLayer.bringToBack();
 }
 setBase('dark');
-document.getElementById('base').onchange = e => setBase(e.target.value);
+document.getElementById('base').onchange = e => { setBase(e.target.value); persist(); };
 
 const gPaths=L.layerGroup().addTo(map);
 const gRoute=L.layerGroup().addTo(map);
 const gVerts=L.layerGroup().addTo(map);
 const gPins =L.layerGroup().addTo(map);
+const gHint =L.layerGroup().addTo(map);   /* snap preview + freehand ink, never persisted */
 
 /* -------------------------------- geometry -------------------------------- */
 const R=6371008.8, rad=d=>d*Math.PI/180;
@@ -273,6 +310,33 @@ function projOn(P,A,B){
   return {t:t, pt:pt, d:hav(P,pt)};
 }
 function pathLen(p){ let s=0; for(let i=1;i<p.pts.length;i++) s+=hav(p.pts[i-1],p.pts[i]); return s; }
+
+/* Douglas–Peucker in a local metre plane. ONLY ever applied to a freehand run
+   that has not yet joined a path — see FREEHAND_SIMPLIFY_M. Never call this on
+   a stored pts[] array: the user's trace is ground truth. */
+const MPD=111320;                       /* metres per degree of latitude */
+function simplifyDP(pts,tolM){
+  if(pts.length<3) return pts.slice();
+  const x=pts.map(p=>p.lng*kx*MPD), y=pts.map(p=>p.lat*MPD);
+  const keep=new Array(pts.length).fill(false);
+  keep[0]=keep[pts.length-1]=true;
+  const stack=[[0,pts.length-1]];
+  while(stack.length){
+    const seg=stack.pop(), a=seg[0], b=seg[1];
+    if(b-a<2) continue;
+    const ax=x[a],ay=y[a],dx=x[b]-ax,dy=y[b]-ay, L2=dx*dx+dy*dy;
+    let bi=-1,bd=tolM;
+    for(let i=a+1;i<b;i++){
+      let t = L2 ? ((x[i]-ax)*dx+(y[i]-ay)*dy)/L2 : 0;
+      t=Math.max(0,Math.min(1,t));
+      const ex=x[i]-(ax+t*dx), ey=y[i]-(ay+t*dy), d=Math.sqrt(ex*ex+ey*ey);
+      if(d>bd){ bd=d; bi=i; }
+    }
+    if(bi<0) continue;
+    keep[bi]=true; stack.push([a,bi],[bi,b]);
+  }
+  return pts.filter((p,i)=>keep[i]);
+}
 function fmt(m){
   if(m==null) return ['—',''];
   return m<1000 ? [String(Math.round(m)),'m'] : [(m/1000).toFixed(2),'km'];
@@ -281,31 +345,91 @@ function fmt(m){
 /* --------------------------------- state --------------------------------- */
 const PALETTE=['#37D6BE','#FFC24B','#8FA6FF','#FF9F6E','#C48FFF','#7CE58A'];
 let paths=[], activeId=null, seq=0, colorSeq=0;
-let mode='add', appendTo='end';
+let mode='add', appendTo='end', inputMode='click';
 let selVert=null;
 let A=null, B=null, pickNext=null;
 let dirty=true, graph=null;
 let history=[];
 
+/* Precision mode exists because a 10 m snap welds a left-side and a right-side
+   trace of the same street into one line, which destroys the measurement. */
+const PRECISION_SNAP_M=0.5;
+let precision=false;
+
 const snapEl=document.getElementById('snap');
-const snapM=()=>+snapEl.value;
+const snapM=()=> precision ? PRECISION_SNAP_M : +snapEl.value;
+
+const uuid=()=> (self.crypto&&self.crypto.randomUUID) ? self.crypto.randomUUID()
+  : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,function(c){
+      const r=Math.random()*16|0; return (c==='x'?r:(r&0x3|0x8)).toString(16); });
+function stamp(o){ if(o&&!o.uid) o.uid=uuid(); if(o) o.updatedAt=Date.now(); return o; }
 
 function newPath(name){
-  const p={id:++seq, name:name||('Path '+(paths.filter(x=>x.source!=='osm').length+1)),
+  const p={id:++seq, uid:uuid(), updatedAt:Date.now(),
+           name:name||('Path '+(paths.filter(x=>x.source!=='osm').length+1)),
            pts:[], color:PALETTE[colorSeq++%PALETTE.length], source:'drawn'};
   paths.push(p); activeId=p.id; return p;
 }
 const active=()=>paths.find(p=>p.id===activeId)||null;
 const byId=id=>paths.find(p=>p.id===id);
 
-function save(){ history.push(JSON.stringify(paths)); if(history.length>50) history.shift(); }
+/* Undo covers the routing work too: deleting an option or dropping a via was
+   otherwise unrecoverable. Candidates are stored by their vias, as everywhere
+   else — never by their solved geometry. */
+function save(){
+  history.push(JSON.stringify({
+    paths:paths,
+    cands:cands.map(function(c){ return {id:c.id,uid:c.uid,name:c.name,color:c.color,vias:c.vias}; }),
+    A:A, B:B, activeId:activeId, activeCand:activeCand
+  }));
+  if(history.length>50) history.shift();
+}
 function undo(){
   const s=history.pop(); if(!s){ toast('Nothing to undo'); return; }
-  paths=JSON.parse(s);
-  if(!byId(activeId)) activeId = paths.length?paths[paths.length-1].id:null;
-  selVert=null; dirty=true; render();
+  /* restores a previous snapshot verbatim — no re-derivation of point arrays */
+  const st=JSON.parse(s);
+  paths=st.paths||[];
+  if(!byId(st.activeId)) activeId = paths.length?paths[paths.length-1].id:null; else activeId=st.activeId;
+  cands=(st.cands||[]).map(function(c){
+    return {id:c.id,uid:c.uid,updatedAt:Date.now(),name:c.name,color:c.color,
+            vias:c.vias||[],legs:[],len:null,err:null};
+  });
+  activeCand = cands.some(c=>c.id===st.activeCand) ? st.activeCand : (cands.length?cands[cands.length-1].id:null);
+  A=st.A||null; B=st.B||null;
+  selVert=null; selVia=null; dirty=vDirty=true;
+  render(); drawPins();
+  if(A&&B) solveAll(); else { gRoute.clearLayers(); candPanel(); strip(); }
+  persist();
 }
-function touch(){ dirty=true; render(); if(A&&B) solveAll(); }
+function touch(){ dirty=vDirty=true; render(); if(A&&B) solveAll(); persist(); }
+
+/* ---- vertex index: cheap grid over every path point, for snap preview ----
+   Separate from the routing graph on purpose: the graph does segment noding,
+   which is far too expensive to rebuild on mousemove. */
+const VCELL=0.0006;                        /* ~66 m of latitude per cell */
+let vIdx=null, vDirty=true;
+function buildVIdx(){
+  const m=new Map();
+  for(const p of paths) for(const pt of p.pts){
+    const k=Math.floor(pt.lat/VCELL)+':'+Math.floor(pt.lng/VCELL);
+    let a=m.get(k); if(!a){ a=[]; m.set(k,a); }
+    a.push(pt);
+  }
+  vIdx=m; vDirty=false;
+}
+function nearestVertex(ll,tol){
+  if(vDirty||!vIdx) buildVIdx();
+  const ci=Math.floor(ll.lat/VCELL), cj=Math.floor(ll.lng/VCELL);
+  let best=null, bd=tol;
+  for(let i=ci-1;i<=ci+1;i++) for(let j=cj-1;j<=cj+1;j++){
+    const arr=vIdx.get(i+':'+j); if(!arr) continue;
+    for(let n=0;n<arr.length;n++){
+      const d=hav(arr[n],ll);
+      if(d<=bd){ bd=d; best=arr[n]; }
+    }
+  }
+  return best;
+}
 
 /* ------------------------------ graph builder ------------------------------ */
 function buildGraph(){
@@ -374,25 +498,74 @@ function buildGraph(){
     }
   });
 
-  graph={nodes:nodes,adj:adj}; dirty=false;
+  /* fixed-size grid over the routable nodes, so "which node is nearest this
+     click" does not have to walk every node in the city. Deliberately not the
+     snap-sized grid above: in Precision mode that cell is about a metre across,
+     which would mean thousands of empty cells per lookup. */
+  const qreg=new Map();
+  for(let i=0;i<nodes.length;i++){
+    if(!adj.has(i)) continue;
+    const k=Math.floor(nodes[i].lat/QCELL)+':'+Math.floor(nodes[i].lng/QCELL);
+    let a=qreg.get(k); if(!a){ a=[]; qreg.set(k,a); }
+    a.push(i);
+  }
+  graph={nodes:nodes,adj:adj,qreg:qreg}; dirty=false;
   return graph;
 }
+const QCELL=0.0015;   /* ~165 m of latitude */
 function G(){ return (dirty||!graph) ? buildGraph() : graph; }
 
 function nearestGraphNode(ll){
-  const g=G(); let best=-1,bd=Infinity;
-  for(let i=0;i<g.nodes.length;i++){
-    if(!g.adj.has(i)) continue;
-    const d=hav(g.nodes[i],ll);
-    if(d<bd){bd=d;best=i;}
+  const g=G();
+  if(!g.qreg||!g.qreg.size) return -1;
+  const ci=Math.floor(ll.lat/QCELL), cj=Math.floor(ll.lng/QCELL);
+  let best=-1,bd=Infinity;
+  /* narrowest cell dimension in metres — longitude cells are the short side at
+     this latitude, and the safe stopping rule has to use the short side */
+  const cellM=QCELL*111320*Math.max(kx,.05);
+  for(let ring=0;ring<=400;ring++){
+    for(let i=ci-ring;i<=ci+ring;i++) for(let j=cj-ring;j<=cj+ring;j++){
+      if(ring>0 && Math.abs(i-ci)!==ring && Math.abs(j-cj)!==ring) continue;  /* boundary only */
+      const arr=g.qreg.get(i+':'+j); if(!arr) continue;
+      for(let n=0;n<arr.length;n++){
+        const d=hav(g.nodes[arr[n]],ll);
+        if(d<bd){ bd=d; best=arr[n]; }
+      }
+    }
+    /* keep expanding until no unscanned cell could still hold anything closer */
+    if(best>=0 && ring*cellM>=bd) break;
   }
   return best;
 }
+/* Binary min-heap for the Dijkstra frontier. A whole-city road import is tens
+   of thousands of nodes, and the old linear scan of the frontier made that
+   unusable — this is handoff §5.7's heap, done because it started to bite. */
+function Heap(){ this.a=[]; }
+Heap.prototype.push=function(d,v){
+  const a=this.a; a.push([d,v]);
+  let i=a.length-1;
+  while(i>0){ const p=(i-1)>>1; if(a[p][0]<=a[i][0]) break; const t=a[p]; a[p]=a[i]; a[i]=t; i=p; }
+};
+Heap.prototype.pop=function(){
+  const a=this.a, top=a[0], last=a.pop();
+  if(a.length){
+    a[0]=last;
+    let i=0;
+    for(;;){
+      const l=2*i+1, r=l+1; let m=i;
+      if(l<a.length&&a[l][0]<a[m][0]) m=l;
+      if(r<a.length&&a[r][0]<a[m][0]) m=r;
+      if(m===i) break;
+      const t=a[m]; a[m]=a[i]; a[i]=t; i=m;
+    }
+  }
+  return top;
+};
 function dijkstra(src,dst){
-  const g=G(), dist=new Map([[src,0]]), prev=new Map(), done=new Set(), pq=[[0,src]];
-  while(pq.length){
-    let bi=0; for(let i=1;i<pq.length;i++) if(pq[i][0]<pq[bi][0]) bi=i;
-    const top=pq.splice(bi,1)[0], d=top[0], u=top[1];
+  const g=G(), dist=new Map([[src,0]]), prev=new Map(), done=new Set(), pq=new Heap();
+  pq.push(0,src);
+  while(pq.a.length){
+    const top=pq.pop(), d=top[0], u=top[1];
     if(done.has(u)) continue;
     done.add(u);
     if(u===dst) break;
@@ -400,7 +573,7 @@ function dijkstra(src,dst){
     for(const v of nb){
       if(done.has(v)) continue;
       const nd=d+hav(g.nodes[u],g.nodes[v]);
-      if(nd<(dist.has(v)?dist.get(v):Infinity)){ dist.set(v,nd); prev.set(v,u); pq.push([nd,v]); }
+      if(nd<(dist.has(v)?dist.get(v):Infinity)){ dist.set(v,nd); prev.set(v,u); pq.push(nd,v); }
     }
   }
   if(!dist.has(dst)) return null;
@@ -423,29 +596,44 @@ function repaintLines(){
     }).addTo(gPaths).on('click', function(ev){
       if(mode==='route') return;
       L.DomEvent.stop(ev);
+      if(swallowClick){ swallowClick=false; return; }   /* end of a freehand drag */
       if(p.source==='osm'){ toast('Imported paths are read-only — draw alongside to extend them'); return; }
       if(mode==='add' && p.id===activeId){ insertOnPath(p, ev.latlng); return; }
       activeId=p.id; selVert=null; render();
     });
   }
 }
+/* Vertices are drawn only for what is on screen, so a dense freehand path stays
+   editable point-by-point at zoom 20 instead of being hidden past a count cap. */
+const VERT_MAX=900;
+let vertHidden=0;   /* points on screen that were too dense to draw handles for */
 function render(){
   repaintLines();
   gVerts.clearLayers();
   const a=active();
-  if(a && (mode==='add'||mode==='edit') && a.pts.length && a.pts.length<=400){
+  const zHi=map.getZoom()>=19;
+  map.getContainer().classList.toggle('zoom-hi',zHi);
+  const box=map.getBounds().pad(0.2);
+  vertHidden=0;
+  if(a && (mode==='add'||mode==='edit') && a.pts.length){
+    let shown=0;
     a.pts.forEach(function(pt,i){
+      if(!box.contains(pt)) return;
+      if(++shown>VERT_MAX){ vertHidden++; return; }
       const isEnd = i===0||i===a.pts.length-1;
       const isSel = selVert && selVert.pathId===a.id && selVert.i===i;
       const cls='vx'+(isEnd?' end':'')+(isSel?' sel':'');
+      const s=zHi?22:16;                       /* hit target grows with zoom */
       const m=L.marker(pt,{
-        icon:L.divIcon({className:'',html:'<div class="'+cls+'"></div>',iconSize:[14,14],iconAnchor:[7,7]}),
+        icon:L.divIcon({className:'',html:'<div class="vxw"><div class="'+cls+'"></div></div>',
+                        iconSize:[s,s],iconAnchor:[s/2,s/2]}),
         draggable: mode==='edit', keyboard:false, zIndexOffset:400
       }).addTo(gVerts);
       m.on('click', function(ev){ L.DomEvent.stop(ev); selVert={pathId:a.id,i:i}; render(); });
       m.on('dragstart', function(){ save(); });
+      /* moves one point the user grabbed, nothing else */
       m.on('drag', function(ev){ a.pts[i]={lat:ev.latlng.lat,lng:ev.latlng.lng}; repaintLines(); });
-      m.on('dragend', function(){ selVert={pathId:a.id,i:i}; touch(); });
+      m.on('dragend', function(){ stamp(a); selVert={pathId:a.id,i:i}; touch(); });
     });
   }
   drawPins(); panel();
@@ -465,6 +653,7 @@ function panel(){
   document.getElementById('punit').textContent = a? (f[1]||'m') : 'm';
   document.getElementById('pcap').textContent = a
     ? a.name+' · '+a.pts.length+' point'+(a.pts.length===1?'':'s')+(a.source==='osm'?' · imported':'')
+      +(vertHidden?' · '+vertHidden+' handles hidden, zoom in':'')
     : 'No path yet';
 
   const list=document.getElementById('list');
@@ -519,13 +708,28 @@ function rowFor(p){
 function escapeHtml(s){ return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 /* ------------------------------ path editing ------------------------------ */
+/* A clicked point goes in exactly where it was clicked and is never revisited
+   by any automatic process. Nothing in this file rewrites pts[] except the
+   explicit user actions in this section. */
 function addPoint(ll){
   let a=active();
   if(!a || a.source==='osm') a=newPath();
   save();
   const pt={lat:ll.lat,lng:ll.lng};
   if(appendTo==='start') a.pts.unshift(pt); else a.pts.push(pt);
-  selVert=null; touch();
+  stamp(a); selVert=null; touch();
+}
+/* Freehand run: the captured cursor samples are simplified BEFORE they join the
+   path, and only ever as a whole run. Existing points are untouched. */
+function addRun(run){
+  let a=active();
+  if(!a || a.source==='osm') a=newPath();
+  save();
+  const pts=simplifyDP(run,FREEHAND_SIMPLIFY_M).map(p=>({lat:p.lat,lng:p.lng}));
+  if(appendTo==='start') a.pts.unshift.apply(a.pts,pts.slice().reverse());
+  else a.pts.push.apply(a.pts,pts);
+  stamp(a); selVert=null; touch();
+  toast('Traced '+pts.length+' points · '+fmt(pathLen(a)).join(' '));
 }
 function insertOnPath(p, ll){
   let best=null;
@@ -535,7 +739,9 @@ function insertOnPath(p, ll){
   }
   if(!best) return;
   save();
+  /* inserts one point on the segment nearest the click, at the clicked spot */
   p.pts.splice(best.i+1,0,best.pt);
+  stamp(p);
   selVert={pathId:p.id,i:best.i+1};
   touch();
   toast('Point inserted — switch to Edit points to drag it');
@@ -543,7 +749,8 @@ function insertOnPath(p, ll){
 document.getElementById('del-pt').onclick=function(){
   if(!selVert) return;
   const p=byId(selVert.pathId); if(!p) return;
-  save(); p.pts.splice(selVert.i,1);
+  save();
+  p.pts.splice(selVert.i,1); stamp(p);   /* removes only the selected point */
   if(p.pts.length===0){
     paths=paths.filter(x=>x.id!==p.id);
     const last=paths.filter(x=>x.source!=='osm').slice(-1)[0];
@@ -556,9 +763,12 @@ document.getElementById('split-pt').onclick=function(){
   const p=byId(selVert.pathId), i=selVert.i;
   if(!p||i<1||i>p.pts.length-2){ toast('Pick a point in the middle of the path'); return; }
   save();
+  /* splits the array in two at the selected point; every point survives, and
+     the shared point is duplicated so both halves keep their exact geometry */
   const tail=p.pts.slice(i);
-  p.pts=p.pts.slice(0,i+1);
-  const np={id:++seq,name:p.name+' (2)',pts:tail.map(x=>({lat:x.lat,lng:x.lng})),
+  p.pts=p.pts.slice(0,i+1); stamp(p);
+  const np={id:++seq,uid:uuid(),updatedAt:Date.now(),
+            name:p.name+' (2)',pts:tail.map(x=>({lat:x.lat,lng:x.lng})),
             color:PALETTE[colorSeq++%PALETTE.length],source:'drawn'};
   paths.splice(paths.indexOf(p)+1,0,np);
   activeId=np.id; selVert=null; touch();
@@ -574,7 +784,8 @@ const CPAL=['#FF3D7F','#4BE0A8','#FFD24B','#7FB2FF','#C48FFF','#FF9F6E'];
 let cands=[], activeCand=null, candSeq=0, selVia=null;
 
 function newCand(vias,name){
-  const c={id:++candSeq, name:name||(candSeq===1?'Optimal':'Option '+candSeq),
+  const c={id:++candSeq, uid:uuid(), updatedAt:Date.now(),
+           name:name||(candSeq===1?'Optimal':'Option '+candSeq),
            vias:(vias||[]).map(v=>({lat:v.lat,lng:v.lng})),
            color:CPAL[(candSeq-1)%CPAL.length], legs:[], len:null, err:null};
   cands.push(c); activeCand=c.id; return c;
@@ -602,7 +813,12 @@ function solveCand(c){
     if(na<0||nb<0){ c.err='nothing to route on'; return; }
     if(na===nb){ c.legs.push([G().nodes[na]]); continue; }
     const r=dijkstra(na,nb);
-    if(!r){ c.err='leg '+(i+1)+' does not connect'; return; }
+    if(!r){
+      /* in Precision the snap is half a metre, so a traced line that merely
+         looks like it touches the network is genuinely not joined to it */
+      c.err='leg '+(i+1)+' does not connect'+(precision?' (Precision snap is 0.5 m)':'');
+      return;
+    }
     c.legs.push(r.path); total+=r.len;
   }
   c.len=total;
@@ -610,6 +826,11 @@ function solveCand(c){
 function solveAll(){
   if(!A||!B){ gRoute.clearLayers(); candPanel(); strip(); return; }
   if(!cands.length) newCand([]);
+  /* nothing to route on yet? fetch the streets around A and B, then re-solve */
+  if(maybeAutoNetwork()){
+    cands.forEach(function(c){ c.legs=[]; c.len=null; c.err='loading the network…'; });
+    gRoute.clearLayers(); candPanel(); strip(); return;
+  }
   cands.forEach(solveCand);
   drawCands(); candPanel(); strip();
 }
@@ -642,6 +863,7 @@ function drawCands(){
         draggable:true, keyboard:false, zIndexOffset:500
       }).addTo(gRoute);
       m.on('click',function(ev){ L.DomEvent.stop(ev); selVia={candId:c.id,i:i}; drawCands(); candPanel(); });
+      m.on('dragstart',function(){ save(); });
       m.on('drag',function(ev){
         c.vias[i]={lat:ev.latlng.lat,lng:ev.latlng.lng};
         const now=Date.now();
@@ -700,6 +922,7 @@ function candPanel(){
       };
       d.querySelector('.x').onclick=function(e){
         e.stopPropagation();
+        save();
         cands=cands.filter(x=>x.id!==c.id);
         if(activeCand===c.id) activeCand=cands.length?cands[cands.length-1].id:null;
         selVia=null; drawCands(); candPanel(); strip();
@@ -726,6 +949,7 @@ function addVia(ll){
   const i=nearestGraphNode(ll);
   const g=G();
   const snap = i>=0 ? {lat:g.nodes[i].lat,lng:g.nodes[i].lng} : {lat:ll.lat,lng:ll.lng};
+  save();
   c.vias.splice(k,0,snap);
   selVia={candId:c.id,i:k};
   solveCand(c); drawCands(); candPanel(); strip();
@@ -735,6 +959,7 @@ document.getElementById('set-a').onclick=function(){ pickNext='A'; toast('Click 
 document.getElementById('set-b').onclick=function(){ pickNext='B'; toast('Click the map to place the finish'); };
 document.getElementById('c-new').onclick=function(){
   if(!A||!B){ toast('Place a start and a finish first'); return; }
+  save();
   const src=curCand();
   const c=newCand(src?src.vias:[], null);
   if(src) c.name=src.name+' variant';
@@ -744,6 +969,7 @@ document.getElementById('c-new').onclick=function(){
 document.getElementById('del-via').onclick=function(){
   if(!selVia) return;
   const c=cands.find(x=>x.id===selVia.candId); if(!c) return;
+  save();
   c.vias.splice(selVia.i,1); selVia=null;
   solveCand(c); drawCands(); candPanel(); strip();
 };
@@ -751,6 +977,7 @@ document.getElementById('clr-route').onclick=function(){ A=B=null; pickNext=null
 
 /* --------------------------------- input --------------------------------- */
 map.on('click', function(ev){
+  if(swallowClick){ swallowClick=false; return; }   /* end of a freehand drag */
   if(mode==='route'){
     const i=nearestGraphNode(ev.latlng);
     const g=G();
@@ -766,11 +993,88 @@ map.on('click', function(ev){
   if(mode==='edit'){ selVert=null; render(); }
 });
 
+/* ------------------------- freehand drag-to-trace ------------------------- */
+/* Perpendicular tolerance for thinning a freehand run, in metres. Deliberately
+   tight: at 0.5 m a traced bend measures within a metre of the same bend laid
+   down by dense clicking. If in doubt, keep more points, not fewer.
+   Chords under-measure an arc by roughly tol/(3R) of its length, so 0.5 m on a
+   20 m-radius bend loses about 0.8%; lower this constant, never raise it. */
+const FREEHAND_SIMPLIFY_M=0.5;
+const FREEHAND_MIN_STEP_M=0.15;   /* discard duplicate samples from a still cursor */
+let fhRun=null, fhInk=null, swallowClick=false;
+
+function fhLatLng(ev){ return map.mouseEventToLatLng(ev); }
+function fhDown(ev){
+  if(mode!=='add'||inputMode!=='free') return;
+  if(ev.pointerType==='mouse'&&ev.button!==0) return;
+  /* the zoom control and the vertex markers live inside the map container, and
+     this is a raw DOM listener, so Leaflet's own propagation guards miss it */
+  if(ev.target.closest&&ev.target.closest('.leaflet-control,.leaflet-marker-icon')) return;
+  ev.preventDefault();
+  const c=map.getContainer();
+  map.dragging.disable();
+  c.style.touchAction='none';
+  if(c.setPointerCapture) try{ c.setPointerCapture(ev.pointerId); }catch(e){}
+  fhRun=[fhLatLng(ev)];
+  gHint.clearLayers();
+  fhInk=L.polyline(fhRun,{color:'#FFFFFF',weight:3,opacity:.9,dashArray:'2 4',interactive:false}).addTo(gHint);
+}
+function fhMove(ev){
+  if(!fhRun) return;
+  ev.preventDefault();
+  const ll=fhLatLng(ev);
+  if(hav(fhRun[fhRun.length-1],ll)<FREEHAND_MIN_STEP_M) return;
+  fhRun.push(ll);
+  fhInk.setLatLngs(fhRun);
+}
+function fhUp(ev){
+  if(!fhRun) return;
+  const c=map.getContainer();
+  if(c.releasePointerCapture&&ev.pointerId!=null) try{ c.releasePointerCapture(ev.pointerId); }catch(e){}
+  c.style.touchAction='';
+  map.dragging.enable();
+  const run=fhRun; fhRun=null; fhInk=null; gHint.clearLayers();
+  /* the browser fires a click after the release; drop that one, but never let
+     the flag outlive the gesture */
+  swallowClick=true;
+  setTimeout(function(){ swallowClick=false; },400);
+  if(run.length<2){ addPoint(run[0]); return; }   /* a tap is just a point */
+  addRun(run);
+}
+(function bindFreehand(){
+  const c=map.getContainer();
+  c.addEventListener('pointerdown',fhDown);
+  c.addEventListener('pointermove',fhMove);
+  c.addEventListener('pointerup',fhUp);
+  c.addEventListener('pointercancel',fhUp);
+})();
+
+/* ------------------------------ snap preview ------------------------------ */
+/* Snapping is invisible until it surprises you, and a surprise fusion silently
+   ruins a measurement. Show the radius, and the node that would be fused. */
+let hoverT=0;
+function clearHint(){ if(!fhRun) gHint.clearLayers(); }
+map.on('mousemove',function(ev){
+  if(mode!=='add'||fhRun){ return; }
+  const now=Date.now();
+  if(now-hoverT<50) return;
+  hoverT=now;
+  const r=snapM();
+  gHint.clearLayers();
+  L.circle(ev.latlng,{radius:r,color:'#FFC24B',weight:1,opacity:.55,dashArray:'3 4',
+                      fillColor:'#FFC24B',fillOpacity:.06,interactive:false}).addTo(gHint);
+  const v=nearestVertex(ev.latlng,r);
+  if(v) L.circleMarker(v,{radius:8,color:'#FFC24B',weight:2,opacity:.95,
+                          fillColor:'#FFC24B',fillOpacity:.35,interactive:false}).addTo(gHint);
+});
+map.on('mouseout',clearHint);
+map.on('zoomend moveend',function(){ clearHint(); if(!fhRun){ render(); persist(); } });
+
 const MODES={add:'m-add',edit:'m-edit',route:'m-route'};
 const HINTS={
-  add:'<b>Add points:</b> every click extends the active path. Click the active line itself to insert a point mid-way. Use <b>New path</b> to start a separate one.',
+  add:'<b>Add points:</b> every click extends the active path. Switch to <b>Freehand drag</b> to press and trace a curve in one go. Click the active line itself to insert a point mid-way. Use <b>New path</b> to start a separate one. The dashed circle is the snap radius — a highlighted point will fuse with your next one.',
   edit:'<b>Edit points:</b> drag any vertex to move it. Click one to select, then delete it or split the path there. <kbd>Delete</kbd> works too.',
-  route:'<b>Route:</b> click for the start, click again for the finish — the app solves the shortest way. Then <b>Variant</b> to copy it, and click or drag a <b>via</b> to pull that copy onto a different path. Every option is listed with its exact distance.'
+  route:'<b>Route:</b> click for the start, click again for the finish — the app loads the street network around them if it needs to, then solves the shortest way. You do not have to draw anything first. Then <b>Variant</b> to copy it, and click or drag a <b>via</b> to pull that copy onto a different path. Every option is listed with its exact distance.'
 };
 function setMode(m){
   mode=m; pickNext=null; selVert=null;
@@ -798,16 +1102,62 @@ document.getElementById('end-start').onclick=function(){
   document.getElementById('end-end').classList.remove('on');
 };
 
+const panelEl=document.querySelector('.panel');
+function setFolded(on){
+  panelEl.classList.toggle('folded',!!on);
+  const b=document.getElementById('fold');
+  b.setAttribute('aria-expanded',on?'false':'true');
+  b.setAttribute('aria-label',on?'Expand the panel':'Collapse the panel');
+}
+document.getElementById('fold').onclick=function(){ setFolded(!panelEl.classList.contains('folded')); };
+/* start out of the way on a phone, where the panel would cover the map */
+if(window.matchMedia&&window.matchMedia('(max-width:720px)').matches) setFolded(true);
+
+function setInput(k){
+  inputMode=k;
+  document.getElementById('in-click').classList.toggle('on',k==='click');
+  document.getElementById('in-free').classList.toggle('on',k==='free');
+  if(k==='free') toast('Press and drag on the map to trace');
+  persist();
+}
+document.getElementById('in-click').onclick=function(){ setInput('click'); };
+document.getElementById('in-free').onclick=function(){ setInput('free'); };
+
+/* ----------------------------- precision mode ----------------------------- */
+function setPrecision(on){
+  precision=!!on;
+  document.getElementById('pm-net').classList.toggle('on',!precision);
+  document.getElementById('pm-prec').classList.toggle('on',precision);
+  const tag=document.getElementById('prec-tag');
+  tag.textContent=precision?'PRECISION':'NETWORK';
+  tag.classList.toggle('on',precision);
+  snapEl.disabled=precision;
+  document.getElementById('snap-out').textContent=precision
+    ? PRECISION_SNAP_M+' m' : snapEl.value+' m';
+  if(precision && document.getElementById('base').value!=='sat'){
+    document.getElementById('base').value='sat'; setBase('sat');
+  }
+  /* mode change only alters how the graph is derived — paths and candidates
+     are untouched, and every candidate re-solves against the new graph */
+  dirty=true;
+  if(A&&B) solveAll();
+  persist();
+}
+document.getElementById('pm-net').onclick=function(){ setPrecision(false); };
+document.getElementById('pm-prec').onclick=function(){ setPrecision(true); };
+
 document.getElementById('new-path').onclick=function(){ save(); newPath(); selVert=null; setMode('add'); };
 document.getElementById('undo').onclick=undo;
 document.getElementById('clear').onclick=function(){
   if(!paths.length) return;
   save(); paths=[]; activeId=null; selVert=null; A=B=null;
+  netTriedKey='';
   clearRoute(); drawPins(); touch();
 };
 snapEl.oninput=function(e){
   document.getElementById('snap-out').textContent=e.target.value+' m';
   dirty=true; if(A&&B) solveAll();
+  persist();
 };
 
 document.addEventListener('keydown',function(e){
@@ -821,34 +1171,299 @@ document.addEventListener('keydown',function(e){
 /* ------------------------------ OSM import ------------------------------ */
 const BIKE='cycleway|footway|path|track|pedestrian|steps|bridleway|living_street';
 const ROAD=BIKE+'|residential|service|unclassified|tertiary|secondary|primary|trunk';
-function importOSM(filter,label){
-  if(map.getZoom()<13){ toast('Zoom in a little before loading'); return; }
-  const b=map.getBounds();
-  const bbox=[b.getSouth(),b.getWest(),b.getNorth(),b.getEast()].map(v=>v.toFixed(6)).join(',');
-  const q='[out:json][timeout:30];way["highway"~"^('+filter+')$"]('+bbox+');out geom;';
-  const busy=document.getElementById('busy');
-  busy.textContent='LOADING…'; busy.classList.add('show');
-  fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:q})
-    .then(function(res){ if(!res.ok) throw new Error(res.status); return res.json(); })
-    .then(function(data){
-      const ways=(data.elements||[]).filter(w=>w.geometry&&w.geometry.length>1).slice(0,1500);
-      if(!ways.length){ toast('No '+label+' found in this view'); return; }
-      save();
-      paths=paths.filter(p=>p.source!=='osm');
-      ways.forEach(function(w){
-        paths.push({id:++seq,
-          name:(w.tags&&(w.tags.name||w.tags.highway))||'way',
-          pts:w.geometry.map(g=>({lat:g.lat,lng:g.lon})),
-          color:'#4E7A8F', source:'osm'});
-      });
-      touch();
-      toast('Loaded '+ways.length+' '+label);
-    })
-    .catch(function(){ toast('Could not reach OpenStreetMap — try again in a moment'); })
-    .then(function(){ busy.classList.remove('show'); });
+
+/* The public Overpass instances are free, shared and shed load with 504s under
+   pressure — one endpoint hit once will fail a good fraction of the time. Walk
+   the mirrors, then come back round for a second pass, and report what actually
+   went wrong rather than a blanket "could not reach". */
+/* Independent instances on independent networks. Measured from a real browser,
+   these fail in completely different ways at the same moment — one host
+   refusing outright (a rate-limited 429 arrives with no CORS headers, so the
+   browser can only report an opaque "failed to fetch") while another answers in
+   under half a second. Breadth across operators is what makes this reliable.
+
+   WORLDWIDE INSTANCES ONLY. Regional mirrors (overpass.osm.ch is Switzerland,
+   overpass.osm.jp is Japan) answer 200 with zero ways outside their extract,
+   which reads as "there is nothing here" when the truth is "wrong server". */
+const OVERPASS=[
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://z.overpass-api.de/api/interpreter'
+];
+/* short, because a hung endpoint costs the full timeout before the next one is
+   tried — rotating quickly beats waiting politely */
+const OVERPASS_TIMEOUT_MS=10000;
+const LAST_GOOD='traceroute.overpass.lastGood';
+function overpassOrder(){
+  let good=null;
+  try{ good=localStorage.getItem(LAST_GOOD); }catch(e){}
+  if(!good||OVERPASS.indexOf(good)<0) return OVERPASS.slice();
+  /* whatever worked last time on this network goes first */
+  return [good].concat(OVERPASS.filter(u=>u!==good));
 }
-document.getElementById('imp-bike').onclick=function(){ importOSM(BIKE,'bike & foot paths'); };
-document.getElementById('imp-road').onclick=function(){ importOSM(ROAD,'roads and paths'); };
+function overpass(q,onTry){
+  let last='no endpoint answered', sawEmpty=null;
+  const order=overpassOrder();
+  function attempt(i){
+    /* every endpoint said "nothing here" — believe it only once they all agree */
+    if(i>=order.length*2) return sawEmpty ? Promise.resolve(sawEmpty) : Promise.reject(new Error(last));
+    const url=order[i%order.length];
+    if(onTry) onTry(i+1,order.length*2);
+    const ctl=('AbortController' in self)?new AbortController():null;
+    const timer=setTimeout(function(){ if(ctl) ctl.abort(); },OVERPASS_TIMEOUT_MS);
+    return fetch(url,{method:'POST',body:q,signal:ctl?ctl.signal:undefined})
+      .then(function(res){
+        if(res.status===429||res.status===504||res.status===503){ throw new Error('busy ('+res.status+')'); }
+        if(!res.ok) throw new Error('HTTP '+res.status);
+        return res.json().then(function(j){
+          /* a 200 with no ways is not proof the area is empty — it is also what
+             a regional instance says about the rest of the world. Keep it, but
+             ask the other endpoints before reporting it. */
+          if(!j||!j.elements||!j.elements.length){ sawEmpty=j||{elements:[]}; last='no data from that endpoint'; return null; }
+          try{ localStorage.setItem(LAST_GOOD,url); }catch(e){}
+          return j;
+        });
+      })
+      .catch(function(err){
+        last = err && err.name==='AbortError' ? 'timed out' : (err.message||'network error');
+        return null;
+      })
+      .then(function(data){
+        clearTimeout(timer);
+        if(data) return data;
+        /* brief backoff once every endpoint has been tried once */
+        const wait = i>=order.length-1 ? 1200 : 0;
+        return new Promise(r=>setTimeout(r,wait)).then(function(){ return attempt(i+1); });
+      });
+  }
+  return attempt(0);
+}
+
+/* Last resort when every Overpass instance refuses: the main OSM API. It is a
+   different host on different infrastructure, so it tends to be reachable when
+   the Overpass mirrors are not. It is meant for editing rather than bulk
+   queries, so it is used only after Overpass has failed and only for a small
+   box — never for the "load the whole viewport" buttons on a wide view. */
+const OSM_API='https://api.openstreetmap.org/api/0.6/map';
+const OSM_API_TILE_DEG=0.02;     /* one request's worth — a few MB of XML */
+const OSM_API_MAX_TILES=8;       /* refuse to grind the editing API for a whole city */
+/* If the wanted area needs more tiles than that, pull in the sides rather than
+   give up — a narrower corridor around the route still beats no network at all. */
+function shrinkForOsmApi(bbox){
+  let b=bbox.slice();
+  for(let i=0;i<12 && osmApiTiles(b).length>OSM_API_MAX_TILES;i++){
+    const cLat=(b[0]+b[2])/2, cLng=(b[1]+b[3])/2, k=0.8;
+    b=[cLat+(b[0]-cLat)*k, cLng+(b[1]-cLng)*k, cLat+(b[2]-cLat)*k, cLng+(b[3]-cLng)*k];
+  }
+  return b;
+}
+function osmApiTiles(bbox){
+  const g=OSM_API_TILE_DEG, out=[];
+  for(let s=Math.floor(bbox[0]/g)*g; s<bbox[2]-1e-9; s+=g)
+    for(let w=Math.floor(bbox[1]/g)*g; w<bbox[3]-1e-9; w+=g)
+      out.push([+s.toFixed(6),+w.toFixed(6),+(s+g).toFixed(6),+(w+g).toFixed(6)]);
+  return out;
+}
+function osmApiTile(box,filter,seen,out){
+  const url=OSM_API+'?bbox='+[box[1],box[0],box[3],box[2]].map(v=>v.toFixed(6)).join(',');
+  const ctl=('AbortController' in self)?new AbortController():null;
+  const timer=setTimeout(function(){ if(ctl) ctl.abort(); },OVERPASS_TIMEOUT_MS*3);
+  return fetch(url,{signal:ctl?ctl.signal:undefined})
+    .then(function(res){ if(!res.ok) throw new Error('OSM API '+res.status); return res.text(); })
+    .then(function(xml){
+      clearTimeout(timer);
+      const doc=new DOMParser().parseFromString(xml,'application/xml');
+      if(doc.querySelector('parsererror')) throw new Error('bad XML from the OSM API');
+      const at=new Map();
+      doc.querySelectorAll('node').forEach(function(n){
+        at.set(n.getAttribute('id'),{lat:+n.getAttribute('lat'),lng:+n.getAttribute('lon')});
+      });
+      const re=new RegExp('^('+filter+')$');
+      doc.querySelectorAll('way').forEach(function(w){
+        const id=w.getAttribute('id');
+        if(seen.has(id)) return;                 /* ways straddle tile edges */
+        let hw=null,name=null;
+        w.querySelectorAll('tag').forEach(function(t){
+          const k=t.getAttribute('k');
+          if(k==='highway') hw=t.getAttribute('v');
+          else if(k==='name') name=t.getAttribute('v');
+        });
+        if(!hw||!re.test(hw)) return;
+        const pts=[];
+        w.querySelectorAll('nd').forEach(function(nd){
+          const p=at.get(nd.getAttribute('ref')); if(p) pts.push(p);
+        });
+        if(pts.length>1){ seen.add(id); out.push({name:name||hw,pts:pts}); }
+      });
+    })
+    .catch(function(err){ clearTimeout(timer); throw err; });
+}
+/* The editing API caps how much one request may return, so a box wider than a
+   tile is fetched as a few tiles and stitched. Sequential on purpose: this is a
+   fallback for when Overpass is down, not a bulk download service. */
+function osmApiWays(filter,bbox,onTile){
+  const tiles=osmApiTiles(bbox);
+  if(tiles.length>OSM_API_MAX_TILES)
+    return Promise.reject(new Error('area too large for the OSM API'));
+  const seen=new Set(), out=[];
+  let ok=0;
+  return tiles.reduce(function(chain,box,i){
+    return chain.then(function(){
+      if(onTile) onTile(i+1,tiles.length);
+      return osmApiTile(box,filter,seen,out).then(function(){ ok++; },function(){ /* skip a bad tile */ });
+    });
+  },Promise.resolve()).then(function(){
+    if(!ok) throw new Error('the OSM API did not answer either');
+    return out;
+  });
+}
+
+/* Requests are snapped outward onto a fixed grid before they are fetched or
+   cached. Without this, a box a few metres wider than the cached one misses the
+   cache completely and goes back to the network for data already on the device;
+   with it, every request in a neighbourhood produces the same key. */
+const NET_GRID_DEG=0.01;                 /* ~1.1 km of latitude */
+function gridBbox(b){
+  const g=NET_GRID_DEG, r=v=>+v.toFixed(6);
+  return [r(Math.floor(b[0]/g)*g), r(Math.floor(b[1]/g)*g),
+          r(Math.ceil (b[2]/g)*g), r(Math.ceil (b[3]/g)*g)];
+}
+
+/* padded bounding box around a set of points, in metres */
+function bboxAround(pts,padM){
+  let s=90,w=180,n=-90,e=-180;
+  pts.forEach(function(p){ s=Math.min(s,p.lat); n=Math.max(n,p.lat); w=Math.min(w,p.lng); e=Math.max(e,p.lng); });
+  const dLat=padM/111320, dLng=padM/(111320*Math.max(kx,.05));
+  return [s-dLat,w-dLng,n+dLat,e+dLng];
+}
+function bboxSpanM(b){ return hav({lat:b[0],lng:b[1]},{lat:b[2],lng:b[3]}); }
+
+/* install a set of ways as the imported layer, replacing any previous import
+   and leaving every drawn path untouched */
+function applyWays(ways){
+  save();
+  paths=paths.filter(p=>p.source!=='osm');
+  ways.forEach(function(w){
+    paths.push({id:++seq, uid:uuid(), updatedAt:Date.now(), name:w.name||'way',
+      /* imported geometry is read-only and never edited */
+      pts:w.pts.map(g=>({lat:g.lat,lng:g.lng})),
+      color:'#4E7A8F', source:'osm'});
+  });
+  touch();
+}
+function importOSM(filter,label,bbox,opts){
+  if(!bbox){
+    if(map.getZoom()<13){ toast('Zoom in a little before loading'); return Promise.resolve(0); }
+    const b=map.getBounds();
+    bbox=[b.getSouth(),b.getWest(),b.getNorth(),b.getEast()];
+  }
+  bbox=gridBbox(bbox);
+  const fresh=!!(opts&&opts.fresh);
+  const busy=document.getElementById('busy');
+  const useCache=function(hit,note){
+    applyWays(hit.ways);
+    const age=Math.round((Date.now()-hit.savedAt)/86400000);
+    toast(hit.ways.length+' '+label+' from this device'+(note?' ('+note+')':'')+
+          (age>0?' · saved '+age+'d ago':''));
+    return hit.ways.length;
+  };
+  const fromNetwork=function(){
+    const q='[out:json][timeout:25];way["highway"~"^('+filter+')$"]('+
+      bbox.map(v=>v.toFixed(6)).join(',')+');out geom;';
+    busy.textContent='LOADING NETWORK…'; busy.classList.add('show');
+    return overpass(q,function(n,of){ busy.textContent='LOADING NETWORK… '+n+'/'+of; })
+      .then(function(data){
+        const ways=(data.elements||[]).filter(w=>w.geometry&&w.geometry.length>1).slice(0,3000)
+          .map(function(w){
+            return {name:(w.tags&&(w.tags.name||w.tags.highway))||'way',
+                    pts:w.geometry.map(g=>({lat:g.lat,lng:g.lon}))};
+          });
+        if(!ways.length){ toast('No '+label+' found here'); return 0; }
+        applyWays(ways);
+        netCachePut(filter,bbox,ways);
+        toast('Loaded '+ways.length+' '+label);
+        return ways.length;
+      })
+      .catch(function(err){
+        /* every Overpass instance refused — try the main OSM API, then fall
+           back to whatever copy of this area is already on the device */
+        busy.textContent='TRYING OPENSTREETMAP DIRECTLY…';
+        /* cache under the box actually fetched, never the one asked for, or a
+           later request would think it already had the wider area */
+        const small=shrinkForOsmApi(bbox);
+        return osmApiWays(filter,small,function(n,of){
+          busy.textContent='OPENSTREETMAP DIRECT… '+n+'/'+of;
+        }).then(function(ways){
+          if(!ways.length) throw new Error('no ways');
+          applyWays(ways);
+          netCachePut(filter,small,ways);
+          toast('Loaded '+ways.length+' '+label+' from OpenStreetMap directly');
+          return ways.length;
+        }).catch(function(){
+          return netCacheGet(filter,bbox).then(function(hit){
+            if(hit&&hit.ways.length) return useCache(hit,'OpenStreetMap is not answering');
+            toast('OpenStreetMap did not answer ('+(err.message||'unknown')+') — try again shortly');
+            return 0;
+          });
+        });
+      })
+      .then(function(n){ busy.classList.remove('show'); return n; });
+  };
+  if(fresh) return fromNetwork();
+  return netCacheGet(filter,bbox).then(function(hit){
+    if(hit&&hit.ways.length) return useCache(hit,null);
+    return fromNetwork();
+  });
+}
+document.getElementById('imp-bike').onclick=function(){ importOSM(BIKE,'bike & foot paths',null,{fresh:true}); };
+document.getElementById('imp-road').onclick=function(){ importOSM(ROAD,'roads and paths',null,{fresh:true}); };
+
+/* --------------------- routing on a bare map (no drawing) ---------------------
+   Routing consumes the derived graph, and the graph does not care whether a
+   path was drawn or imported. So "route A to B without drawing anything" is
+   just: make sure a network exists around A and B, then solve as usual. */
+const AUTO_NET_NEAR_M=60;       /* an endpoint this close to a line needs nothing loaded */
+/* Slack around the A–B box. A real route rarely runs straight down the corridor
+   between its endpoints, and anything outside the fetched box simply cannot be
+   found, so the padding scales with how far apart the endpoints are. */
+const AUTO_NET_PAD_MIN_M=350, AUTO_NET_PAD_FRAC=0.3, AUTO_NET_PAD_MAX_M=1500;
+const AUTO_NET_MAX_SPAN_M=15000;
+function autoNetPad(){
+  return Math.min(AUTO_NET_PAD_MAX_M, Math.max(AUTO_NET_PAD_MIN_M, hav(A,B)*AUTO_NET_PAD_FRAC));
+}
+let netBusy=false, netTriedKey='';
+function endpointKey(){
+  return (A&&B) ? [A.lat,A.lng,B.lat,B.lng].map(v=>v.toFixed(5)).join(',') : '';
+}
+function maybeAutoNetwork(){
+  if(!A||!B||netBusy) return false;
+  const key=endpointKey();
+  if(netTriedKey===key) return false;
+  /* already something routable at both ends — the user's own paths count */
+  if(paths.length && nearestVertex(A,AUTO_NET_NEAR_M) && nearestVertex(B,AUTO_NET_NEAR_M)) return false;
+  const bbox=bboxAround([A,B],autoNetPad());
+  if(bboxSpanM(bbox)>AUTO_NET_MAX_SPAN_M){
+    toast('Start and finish are far apart — load the network yourself with Load all roads');
+    netTriedKey=key;
+    return false;
+  }
+  netTriedKey=key; netBusy=true;
+  toast('Loading the street network between your two points…');
+  importOSM(ROAD,'roads and paths',bbox)
+    .then(function(n){
+      netBusy=false;
+      if(n){ solveAll(); return; }
+      /* let the next attempt try again rather than latching the failure, but do
+         not re-solve here — that would spin on a dead endpoint */
+      netTriedKey='';
+      cands.forEach(function(c){ c.err='network not loaded'; });
+      candPanel(); strip();
+    })
+    .catch(function(){ netBusy=false; netTriedKey=''; });
+  return true;
+}
 
 /* -------------------------------- save/load -------------------------------- */
 document.getElementById('save').onclick=function(){
@@ -862,36 +1477,107 @@ document.getElementById('save').onclick=function(){
   const a=document.createElement('a'); a.href=url; a.download='paths.geojson'; a.click();
   URL.revokeObjectURL(url);
 };
+document.getElementById('gpx').onclick=function(){
+  const ps=paths.filter(p=>p.source!=='osm'&&p.pts.length>1);
+  if(!ps.length){ toast('Nothing to export yet'); return; }
+  const esc=s=>escapeHtml(s);
+  const body=ps.map(function(p){
+    return '<trk><name>'+esc(p.name)+'</name><trkseg>'+
+      p.pts.map(x=>'<trkpt lat="'+x.lat.toFixed(7)+'" lon="'+x.lng.toFixed(7)+'"/>').join('')+
+      '</trkseg></trk>';
+  }).join('');
+  const gpx='<?xml version="1.0" encoding="UTF-8"?>\n'+
+    '<gpx version="1.1" creator="Trace &amp; Route" xmlns="http://www.topografix.com/GPX/1/1">'+
+    body+'</gpx>';
+  const url=URL.createObjectURL(new Blob([gpx],{type:'application/gpx+xml'}));
+  const a=document.createElement('a'); a.href=url; a.download='paths.gpx'; a.click();
+  URL.revokeObjectURL(url);
+};
 document.getElementById('load').onclick=function(){ document.getElementById('file').click(); };
+
+/* GPX in as well as out — a track recorded on a watch is points in order, which
+   is exactly the model here, so they are taken verbatim like any other file */
+function linesFromGPX(text){
+  const doc=new DOMParser().parseFromString(text,'application/xml');
+  if(doc.querySelector('parsererror')) throw new Error('bad XML');
+  const out=[];
+  doc.querySelectorAll('trk').forEach(function(trk){
+    const nm=trk.querySelector('name'), name=nm?nm.textContent:null;
+    trk.querySelectorAll('trkseg').forEach(function(seg){
+      const pts=[];
+      seg.querySelectorAll('trkpt').forEach(function(p){
+        pts.push({lat:+p.getAttribute('lat'),lng:+p.getAttribute('lon')});
+      });
+      if(pts.length>1) out.push({name:name,pts:pts});
+    });
+  });
+  doc.querySelectorAll('rte').forEach(function(rte){
+    const nm=rte.querySelector('name'), pts=[];
+    rte.querySelectorAll('rtept').forEach(function(p){
+      pts.push({lat:+p.getAttribute('lat'),lng:+p.getAttribute('lon')});
+    });
+    if(pts.length>1) out.push({name:nm?nm.textContent:null,pts:pts});
+  });
+  return out;
+}
+function linesFromGeoJSON(text){
+  const g=JSON.parse(text);
+  const feats=g.type==='FeatureCollection'?g.features:[g];
+  const out=[];
+  feats.forEach(function(ft){
+    const geo=ft.geometry||ft, pr=ft.properties||{};
+    const lines = geo.type==='LineString'?[geo.coordinates]:(geo.type==='MultiLineString'?geo.coordinates:[]);
+    lines.forEach(function(c){
+      out.push({name:pr.name||null, color:pr.color||null, source:pr.source,
+                pts:c.map(p=>({lat:p[1],lng:p[0]}))});
+    });
+  });
+  return out;
+}
 document.getElementById('file').onchange=function(e){
   const f=e.target.files[0]; if(!f) return;
+  const isGpx=/\.gpx$/i.test(f.name);
   const r=new FileReader();
   r.onload=function(){
-    try{
-      const g=JSON.parse(r.result);
-      const feats=g.type==='FeatureCollection'?g.features:[g];
-      save(); let n=0;
-      feats.forEach(function(ft){
-        const geo=ft.geometry||ft, pr=ft.properties||{};
-        const lines = geo.type==='LineString'?[geo.coordinates]:(geo.type==='MultiLineString'?geo.coordinates:[]);
-        lines.forEach(function(c){
-          n++;
-          paths.push({id:++seq, name:pr.name||('Path '+n),
-            pts:c.map(p=>({lat:p[1],lng:p[0]})),
-            color:pr.color||PALETTE[colorSeq++%PALETTE.length],
-            source:pr.source==='osm'?'osm':'drawn'});
-        });
-      });
-      if(n){
-        const last=paths.filter(p=>p.source!=='osm').slice(-1)[0];
-        activeId=last?last.id:null;
-        const bb=L.latLngBounds([].concat.apply([],paths.map(p=>p.pts)));
-        if(bb.isValid()) map.fitBounds(bb,{padding:[50,50]});
-        touch(); toast('Loaded '+n+' paths');
-      } else toast('No lines found in that file');
-    }catch(err){ toast('That file is not valid GeoJSON'); }
+    let lines;
+    try{ lines = isGpx ? linesFromGPX(r.result) : linesFromGeoJSON(r.result); }
+    catch(err){ toast('That file is not valid '+(isGpx?'GPX':'GeoJSON')); return; }
+    if(!lines.length){ toast('No lines found in that file'); return; }
+    save();
+    lines.forEach(function(ln,i){
+      paths.push({id:++seq, uid:uuid(), updatedAt:Date.now(),
+        name:ln.name||('Path '+(i+1)),
+        /* coordinates are taken verbatim from the file */
+        pts:ln.pts,
+        color:ln.color||PALETTE[colorSeq++%PALETTE.length],
+        source:ln.source==='osm'?'osm':'drawn'});
+    });
+    const last=paths.filter(p=>p.source!=='osm').slice(-1)[0];
+    activeId=last?last.id:null;
+    const bb=L.latLngBounds([].concat.apply([],paths.map(p=>p.pts)));
+    if(bb.isValid()) map.fitBounds(bb,{padding:[50,50]});
+    touch(); toast('Loaded '+lines.length+' path'+(lines.length===1?'':'s'));
   };
   r.readAsText(f); e.target.value='';
+};
+
+/* Opens on Reykjavík, which is wrong for anyone standing anywhere else. Behind
+   a button, so nothing asks for your location just because the page loaded. */
+document.getElementById('locate').onclick=function(){
+  if(!navigator.geolocation){ toast('This browser will not share a location'); return; }
+  toast('Asking your browser where you are…');
+  navigator.geolocation.getCurrentPosition(function(pos){
+    map.setView([pos.coords.latitude,pos.coords.longitude],18);
+    toast('Centred on you — accurate to about '+Math.round(pos.coords.accuracy)+' m');
+  },function(err){
+    toast(err.code===1?'Location permission refused':'Could not get a location fix');
+  },{enableHighAccuracy:true,timeout:10000,maximumAge:60000});
+};
+document.getElementById('fit').onclick=function(){
+  const pts=[].concat.apply([],paths.filter(p=>p.source!=='osm').map(p=>p.pts));
+  if(!pts.length){ toast('No paths to fit to yet'); return; }
+  const bb=L.latLngBounds(pts);
+  if(bb.isValid()) map.fitBounds(bb,{padding:[50,50]});
 };
 
 /* --------------------------------- misc --------------------------------- */
@@ -902,7 +1588,158 @@ function toast(m){
   clearTimeout(tt); tt=setTimeout(function(){ t.classList.remove('show'); },2400);
 }
 map.on('moveend',function(){ kx=Math.cos(rad(map.getCenter().lat)); });
-setMode('add'); clearRoute(); render();
+
+/* ------------------------------ persistence ------------------------------ */
+/* Autosave of everything the user made: paths, candidates, A/B, modes, view.
+   Records carry a stable uid and updatedAt so a future sync or merge has
+   something to hold on to. Point arrays are stored verbatim. */
+const DB='trace-route', STORE='state', NET='net', KEY='current', SCHEMA=1;
+function withDB(fn){
+  return new Promise(function(res,rej){
+    if(!self.indexedDB){ rej(new Error('no indexeddb')); return; }
+    const r=indexedDB.open(DB,2);
+    r.onupgradeneeded=function(){
+      const db=r.result;
+      if(!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
+      if(!db.objectStoreNames.contains(NET)) db.createObjectStore(NET);
+    };
+    r.onsuccess=function(){ fn(r.result,res,rej); };
+    r.onerror=function(){ rej(r.error); };
+  });
+}
+function dbPut(v,store,key){
+  return withDB(function(db,res,rej){
+    const s=store||STORE, tx=db.transaction(s,'readwrite');
+    tx.objectStore(s).put(v,key||KEY);
+    tx.oncomplete=function(){ db.close(); res(); };
+    tx.onerror=function(){ db.close(); rej(tx.error); };
+  });
+}
+function dbGet(store,key){
+  return withDB(function(db,res,rej){
+    const s=store||STORE, tx=db.transaction(s,'readonly');
+    const q=tx.objectStore(s).get(key||KEY);
+    q.onsuccess=function(){ db.close(); res(q.result||null); };
+    q.onerror=function(){ db.close(); rej(q.error); };
+  });
+}
+function dbWipe(){
+  return withDB(function(db,res,rej){
+    const tx=db.transaction([STORE,NET],'readwrite');
+    tx.objectStore(STORE).delete(KEY);
+    tx.objectStore(NET).clear();
+    tx.oncomplete=function(){ db.close(); res(); };
+    tx.onerror=function(){ db.close(); rej(tx.error); };
+  });
+}
+
+/* ---------------------------- network cache ----------------------------
+   Overpass is a free shared service that is regularly slow or down. Once an
+   area has been fetched it is kept locally, so routing the same neighbourhood
+   tomorrow needs no network at all. Cached geometry is imported OSM data, and
+   stays as read-only as any other import. */
+const NET_CACHE_KEY='areas', NET_CACHE_MAX=8;
+function netCacheGet(filter,bbox){
+  return dbGet(NET,NET_CACHE_KEY).then(function(list){
+    if(!list||!list.length) return null;
+    /* any cached area that fully contains what is being asked for will do */
+    const hit=list.filter(function(e){
+      return e.filter===filter &&
+        e.bbox[0]<=bbox[0]+1e-9 && e.bbox[1]<=bbox[1]+1e-9 &&
+        e.bbox[2]>=bbox[2]-1e-9 && e.bbox[3]>=bbox[3]-1e-9;
+    }).sort(function(a,b){ return b.savedAt-a.savedAt; })[0];
+    return hit||null;
+  }).catch(function(){ return null; });
+}
+function netCachePut(filter,bbox,ways){
+  return dbGet(NET,NET_CACHE_KEY).then(function(list){
+    list=(list||[]).filter(function(e){
+      /* drop anything the new, larger area already covers */
+      return !(e.filter===filter &&
+        bbox[0]<=e.bbox[0] && bbox[1]<=e.bbox[1] && bbox[2]>=e.bbox[2] && bbox[3]>=e.bbox[3]);
+    });
+    list.push({filter:filter,bbox:bbox,ways:ways,savedAt:Date.now()});
+    list.sort(function(a,b){ return b.savedAt-a.savedAt; });
+    return dbPut(list.slice(0,NET_CACHE_MAX),NET,NET_CACHE_KEY);
+  }).catch(function(){ /* cache is an optimisation, never a hard failure */ });
+}
+
+let ready=false, saveT=null;
+function snapshot(){
+  const ctr=map.getCenter();
+  return {
+    schema:SCHEMA, savedAt:Date.now(),
+    paths:paths.map(function(p){
+      return {uid:p.uid||uuid(), updatedAt:p.updatedAt||Date.now(), name:p.name,
+              color:p.color, source:p.source,
+              pts:p.pts.map(x=>({lat:x.lat,lng:x.lng}))};
+    }),
+    cands:cands.map(function(c){
+      return {uid:c.uid||uuid(), updatedAt:c.updatedAt||Date.now(), name:c.name,
+              color:c.color, vias:c.vias.map(v=>({lat:v.lat,lng:v.lng}))};
+    }),
+    A:A, B:B,
+    activeUid:(byId(activeId)||{}).uid||null,
+    activeCandUid:(cands.find(c=>c.id===activeCand)||{}).uid||null,
+    mode:mode, inputMode:inputMode, appendTo:appendTo,
+    precision:precision, snap:+snapEl.value,
+    base:document.getElementById('base').value,
+    view:{lat:ctr.lat,lng:ctr.lng,z:map.getZoom()}
+  };
+}
+function persist(){
+  if(!ready) return;
+  clearTimeout(saveT);
+  saveT=setTimeout(function(){
+    dbPut(snapshot()).catch(function(){ /* private mode / quota — stay usable */ });
+  },400);
+}
+function applyState(st){
+  if(!st||st.schema!==SCHEMA) return;
+  paths=(st.paths||[]).map(function(p){
+    return {id:++seq, uid:p.uid||uuid(), updatedAt:p.updatedAt||Date.now(),
+            name:p.name||'Path', color:p.color||PALETTE[colorSeq++%PALETTE.length],
+            source:p.source==='osm'?'osm':'drawn',
+            pts:(p.pts||[]).map(x=>({lat:x.lat,lng:x.lng}))};
+  });
+  colorSeq=paths.length;
+  const av=paths.find(p=>p.uid===st.activeUid);
+  activeId = av ? av.id : (paths.filter(p=>p.source!=='osm').slice(-1)[0]||{}).id||null;
+
+  A=st.A||null; B=st.B||null;
+  cands=(st.cands||[]).map(function(c){
+    return {id:++candSeq, uid:c.uid||uuid(), updatedAt:c.updatedAt||Date.now(),
+            name:c.name||'Option', color:c.color||CPAL[(candSeq-1)%CPAL.length],
+            vias:(c.vias||[]).map(v=>({lat:v.lat,lng:v.lng})),
+            legs:[], len:null, err:null};
+  });
+  const ac=cands.find(c=>c.uid===st.activeCandUid);
+  activeCand = ac ? ac.id : (cands.length?cands[cands.length-1].id:null);
+
+  if(st.snap) snapEl.value=st.snap;
+  document.getElementById('snap-out').textContent=snapEl.value+' m';
+  if(st.base&&BASES[st.base]){ document.getElementById('base').value=st.base; setBase(st.base); }
+  if(st.view) map.setView([st.view.lat,st.view.lng],st.view.z);
+  if(st.appendTo==='start') document.getElementById('end-start').click();
+  dirty=vDirty=true;
+}
+document.getElementById('wipe').onclick=function(){
+  dbWipe().then(function(){ toast('Saved copy erased — this page keeps what is on screen'); })
+          .catch(function(){ toast('Nothing saved to erase'); });
+};
+
+/* --------------------------------- boot --------------------------------- */
+function boot(st){
+  if(st){ try{ applyState(st); }catch(e){ /* corrupt save must not brick the app */ } }
+  ready=true;
+  setInput(st&&st.inputMode==='free'?'free':'click');
+  setPrecision(!!(st&&st.precision));
+  setMode(st&&/^(add|edit|route)$/.test(st.mode)?st.mode:'add');
+  if(A&&B) solveAll(); else clearRoute();
+  render();
+  if(st&&paths.length) toast('Restored '+paths.length+' path'+(paths.length===1?'':'s'));
+}
+dbGet().then(boot,function(){ boot(null); });
 })();
 </script>
 </body>
