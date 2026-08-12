@@ -69,6 +69,7 @@
   .drawer summary:focus-visible{outline:2px solid var(--pin);outline-offset:2px}
   .drawer[open] summary{margin-bottom:8px}
   .drawer.danger[open] summary{color:#FF7DA6}
+  .drawer-note{margin:0 0 8px;font-size:11px;line-height:1.5;color:var(--slate-text)}
 
   /* sits above .scroll, so it survives the fold */
   .readout{border-bottom:1px solid var(--line);flex:none}
@@ -328,9 +329,11 @@
          instead of competing with the work. -->
     <details class="drawer">
       <summary>Street network from OpenStreetMap</summary>
+      <p class="drawer-note">Loads everything in the current view — zoom out to the
+        whole capital area and it will take the lot.</p>
       <div class="g2">
-        <button class="ghost" id="imp-bike">Load bike &amp; foot</button>
-        <button class="ghost" id="imp-road">Load all roads</button>
+        <button class="ghost" id="imp-bike">Bike &amp; foot in view</button>
+        <button class="ghost" id="imp-road">All roads in view</button>
       </div>
     </details>
 
@@ -583,35 +586,102 @@ function nearestVertex(ll,tol){
   return best;
 }
 
-/* ------------------------------ graph builder ------------------------------ */
+/* ------------------------------ graph builder ------------------------------
+   The imported network is the expensive part and the part that does not change
+   while you draw: a capital-area import is ~180 000 segments, and rebuilding it
+   from scratch on every added point froze the tab for seconds at a time. So it
+   is built once per (import, tolerance) and kept, and everything the user draws
+   is layered on top *additively* — new nodes appended, new links written to an
+   overlay that shadows the base without copying it.
+
+   Additive is not a shortcut, it is correct: when a drawn line crosses an
+   imported way, splitting that way adds a node and two shorter links while the
+   original A→B link remains. Both describe the same ground, the same length,
+   and the junction becomes reachable — which is the whole point of noding. */
+let base=null, baseSig=null;
+function baseSignature(tol){ return osmSignature()+'@'+tol; }
+
 function buildGraph(){
-  const nodes=[], adj=new Map(), tol=snapM();
+  const tol=snapM();
+  const wantSig=baseSignature(tol);
+  if(!base||baseSig!==wantSig){ base=buildBase(tol); baseSig=wantSig; }
+  graph=layerDrawn(base,tol);
+  dirty=false;
+  return graph;
+}
+
+/* the imported half: built once, never mutated afterwards */
+function buildBase(tol){
+  const t0=Date.now();
+  const g=assemble(paths.filter(p=>p.source==='osm'),tol,null);
+  g.builtMs=Date.now()-t0;
+  return g;
+}
+/* the user's half, layered over the cached imports */
+function layerDrawn(baseGraph,tol){
+  const drawn=paths.filter(p=>p.source!=='osm');
+  if(!drawn.length) return baseGraph;
+  return assemble(drawn,tol,baseGraph);
+}
+
+function assemble(sourcePaths,tol,over){
+  const nodes = over ? over.nodes.slice() : [];
+  const adj=new Map();
+  /* neighbours come from the overlay first, then the untouched base */
+  const nbrs = over
+    ? function(u){ return adj.get(u)||over.adj.get(u); }
+    : function(u){ return adj.get(u); };
+  const hasNode = over
+    ? function(u){ return adj.has(u)||over.adj.has(u); }
+    : function(u){ return adj.has(u); };
   const dLat=tol/111320, dLng=tol/(111320*Math.max(kx,.05));
   const cell=Math.max(dLat,dLng)*2;
   const reg=new Map();
+  /* Where two OSM ways meet they carry the *same* coordinate, and over a whole
+     city that is most of the points in the file. An exact-coordinate lookup
+     answers those without touching the radius search at all. */
+  const exact=new Map();
+  function cellNodes(k){
+    const mine=reg.get(k), theirs=over?over.reg.get(k):null;
+    if(mine&&theirs) return mine.concat(theirs);
+    return mine||theirs;
+  }
   function nodeAt(pt){
+    const ek=pt.lat+','+pt.lng;
+    let hit=exact.get(ek);
+    if(hit===undefined&&over) hit=over.exact.get(ek);
+    if(hit!==undefined) return hit;
     const ci=Math.floor(pt.lat/cell), cj=Math.floor(pt.lng/cell);
     let best=-1,bd=tol;
     for(let i=ci-1;i<=ci+1;i++) for(let j=cj-1;j<=cj+1;j++){
-      const arr=reg.get(i+':'+j); if(!arr) continue;
+      const arr=cellNodes(i+':'+j); if(!arr) continue;
       for(let n=0;n<arr.length;n++){ const d=hav(nodes[arr[n]],pt); if(d<=bd){bd=d;best=arr[n];} }
     }
-    if(best>=0) return best;
+    if(best>=0){ exact.set(ek,best); return best; }
     const id=nodes.push({lat:pt.lat,lng:pt.lng})-1;
     const k=ci+':'+cj;
     if(!reg.has(k)) reg.set(k,[]);
     reg.get(k).push(id);
+    exact.set(ek,id);
     return id;
+  }
+  /* first write to a base node copies its neighbours into the overlay, so the
+     cached import is never mutated */
+  function edgeSet(u){
+    let s=adj.get(u);
+    if(!s){ const b=over?over.adj.get(u):null; s=b?new Set(b):new Set(); adj.set(u,s); }
+    return s;
   }
   function link(a,b){
     if(a===b) return;
-    if(!adj.has(a)) adj.set(a,new Set());
-    if(!adj.has(b)) adj.set(b,new Set());
-    adj.get(a).add(b); adj.get(b).add(a);
+    edgeSet(a).add(b); edgeSet(b).add(a);
   }
 
   const segs=[];
-  for(const p of paths) for(let i=0;i<p.pts.length-1;i++) segs.push({A:p.pts[i],B:p.pts[i+1]});
+  for(const p of sourcePaths){
+    const osm=p.source==='osm';
+    for(let i=0;i<p.pts.length-1;i++) segs.push({A:p.pts[i],B:p.pts[i+1],osm:osm});
+  }
 
   const SC=0.002, gi=new Map();
   function cellsOf(s){
@@ -623,19 +693,51 @@ function buildGraph(){
   }
   segs.forEach((s,i)=>{ for(const k of cellsOf(s)){ if(!gi.has(k)) gi.set(k,[]); gi.get(k).push(i); } });
 
+  /* Two imported ways are never noded against each other. OpenStreetMap already
+     shares a node wherever two ways genuinely meet, so a crossing found here
+     between two imported ways is almost always a bridge over a road or a tunnel
+     under one — inventing a junction there would let a route turn off a bridge
+     into thin air. Measured on the capital area: 11.1 million intersection tests
+     to find 749 such crossings, nearly all of them grade separations.
+     Anything the user drew is still noded against everything. */
   const cuts=segs.map(()=>[]);
+  /* Cuts landing on a cached imported segment, keyed by its index in the base.
+     Those segments are not rebuilt — a junction node is simply added along them. */
+  const baseCuts=new Map();
+  /* Only what is being assembled drives this loop. An imported way needs noding
+     only where a drawn line crosses it, and that case is found from the drawn
+     side — so the outer loop is a few hundred segments rather than a few hundred
+     thousand, and both sides still get their cut recorded. The imported segments
+     are looked up through the index the base already built. */
   segs.forEach((s,i)=>{
-    const seen=new Set();
+    if(s.osm) return;
+    const seen=new Set(), seenBase=new Set();
     for(const k of cellsOf(s)){
       const bucket=gi.get(k)||[];
       for(let n=0;n<bucket.length;n++){
         const j=bucket[n];
-        if(j<=i||seen.has(j)) continue;
+        if(j===i||seen.has(j)) continue;
         seen.add(j);
         const r=segInt(s.A,s.B,segs[j].A,segs[j].B);
         if(!r) continue;
         if(r.t>1e-9&&r.t<1-1e-9) cuts[i].push(r.t);
         if(r.u>1e-9&&r.u<1-1e-9) cuts[j].push(r.u);
+      }
+      if(!over) continue;
+      const bb=over.gi.get(k);
+      if(!bb) continue;
+      for(let n=0;n<bb.length;n++){
+        const j=bb[n];
+        if(seenBase.has(j)) continue;
+        seenBase.add(j);
+        const bs=over.segs[j];
+        const r=segInt(s.A,s.B,bs.A,bs.B);
+        if(!r) continue;
+        if(r.t>1e-9&&r.t<1-1e-9) cuts[i].push(r.t);
+        if(r.u>1e-9&&r.u<1-1e-9){
+          let arr=baseCuts.get(j); if(!arr){ arr=[]; baseCuts.set(j,arr); }
+          arr.push(r.u);
+        }
       }
     }
   });
@@ -649,27 +751,51 @@ function buildGraph(){
       link(prev,id); prev=id; pt=ts[k];
     }
   });
+  /* additive junctions on imported segments: the original edge stays, and the
+     new node is linked to both of its ends, so the crossing becomes turnable */
+  baseCuts.forEach(function(ts,j){
+    const bs=over.segs[j];
+    const a=nodeAt(bs.A), b=nodeAt(bs.B);
+    ts.sort((x,y)=>x-y).forEach(function(t){
+      const id=nodeAt(lerp(bs.A,bs.B,t));
+      link(a,id); link(id,b);
+    });
+  });
 
   /* fixed-size grid over the routable nodes, so "which node is nearest this
      click" does not have to walk every node in the city. Deliberately not the
      snap-sized grid above: in Precision mode that cell is about a metre across,
      which would mean thousands of empty cells per lookup. */
   const qreg=new Map();
-  for(let i=0;i<nodes.length;i++){
-    if(!adj.has(i)) continue;
+  const from = over ? (over.nodes.length) : 0;   /* only the nodes this pass added */
+  for(let i=from;i<nodes.length;i++){
+    if(!hasNode(i)) continue;
     const k=Math.floor(nodes[i].lat/QCELL)+':'+Math.floor(nodes[i].lng/QCELL);
     let a=qreg.get(k); if(!a){ a=[]; qreg.set(k,a); }
     a.push(i);
   }
-  graph={nodes:nodes,adj:adj,qreg:qreg}; dirty=false;
-  return graph;
+  const g={
+    nodes:nodes, adj:adj, reg:reg, exact:exact, qreg:qreg,
+    /* kept so a later layering pass can find crossings without re-indexing */
+    segs:segs, gi:gi,
+    over:over||null,
+    /* the routing side reads the graph through these, so it never has to know
+       whether a node belongs to the cached import or to this pass */
+    nbrs:nbrs, hasNode:hasNode,
+    cells:function(k){
+      const mine=qreg.get(k), theirs=over?over.cells(k):null;
+      if(mine&&theirs) return mine.concat(theirs);
+      return mine||theirs;
+    }
+  };
+  return g;
 }
 const QCELL=0.0015;   /* ~165 m of latitude */
 function G(){ return (dirty||!graph) ? buildGraph() : graph; }
 
 function nearestGraphNode(ll){
   const g=G();
-  if(!g.qreg||!g.qreg.size) return -1;
+  if(!g.qreg||(!g.qreg.size&&!(g.over&&g.over.qreg.size))) return -1;
   const ci=Math.floor(ll.lat/QCELL), cj=Math.floor(ll.lng/QCELL);
   let best=-1,bd=Infinity;
   /* narrowest cell dimension in metres — longitude cells are the short side at
@@ -678,7 +804,7 @@ function nearestGraphNode(ll){
   for(let ring=0;ring<=400;ring++){
     for(let i=ci-ring;i<=ci+ring;i++) for(let j=cj-ring;j<=cj+ring;j++){
       if(ring>0 && Math.abs(i-ci)!==ring && Math.abs(j-cj)!==ring) continue;  /* boundary only */
-      const arr=g.qreg.get(i+':'+j); if(!arr) continue;
+      const arr=g.cells(i+':'+j); if(!arr) continue;
       for(let n=0;n<arr.length;n++){
         const d=hav(g.nodes[arr[n]],ll);
         if(d<bd){ bd=d; best=arr[n]; }
@@ -721,7 +847,7 @@ function dijkstra(src,dst){
     if(done.has(u)) continue;
     done.add(u);
     if(u===dst) break;
-    const nb=g.adj.get(u); if(!nb) continue;
+    const nb=g.nbrs(u); if(!nb) continue;
     for(const v of nb){
       if(done.has(v)) continue;
       const nd=d+hav(g.nodes[u],g.nodes[v]);
@@ -1495,6 +1621,8 @@ function selectVertexIntent(e){
 /* ------------------------------ OSM import ------------------------------ */
 const BIKE='cycleway|footway|path|track|pedestrian|steps|bridleway|living_street';
 const ROAD=BIKE+'|residential|service|unclassified|tertiary|secondary|primary|trunk';
+const MAX_WAYS=80000;           /* a runaway guard, not a region limit */
+const MIN_IMPORT_ZOOM=10;       /* zoom 10 covers a whole capital region */
 
 /* The public Overpass instances are free, shared and shed load with 504s under
    pressure — one endpoint hit once will fail a good fraction of the time. Walk
@@ -1684,27 +1812,34 @@ function bboxSpanM(b){ return hav({lat:b[0],lng:b[1]},{lat:b[2],lng:b[3]}); }
 
 /* install a set of ways as the imported layer, replacing any previous import
    and leaving every drawn path untouched */
-function applyWays(ways){
+/* which cached area is currently loaded, so a reload can restore it without
+   carrying tens of thousands of ways through the autosave */
+let loadedNet=null;
+function applyWays(ways,key){
   save();
   paths=paths.filter(p=>p.source!=='osm');
-  ways.forEach(function(w){
-    paths.push({id:++seq, uid:uuid(), updatedAt:Date.now(), name:w.name||'way',
+  const now=Date.now();
+  ways.forEach(function(w,i){
+    /* no uuid() per way: 43 000 calls to crypto.randomUUID for read-only
+       geometry that is never synced, merged or referenced by id */
+    paths.push({id:++seq, uid:'osm-'+i, updatedAt:now, name:w.name||'way',
       /* imported geometry is read-only and never edited */
       pts:w.pts.map(g=>({lat:g.lat,lng:g.lng})),
       color:'#4E7A8F', source:'osm'});
   });
+  loadedNet=key||null;
   touch();
 }
 function importOSM(filter,label,bbox,opts){
   if(!bbox){
-    if(map.getZoom()<13){ toast('Zoom in a little before loading'); return Promise.resolve(0); }
+    if(map.getZoom()<MIN_IMPORT_ZOOM){ toast('Zoom in a little before loading'); return Promise.resolve(0); }
     const b=map.getBounds();
     bbox=[b.getSouth(),b.getWest(),b.getNorth(),b.getEast()];
   }
   bbox=gridBbox(bbox);
   const fresh=!!(opts&&opts.fresh);
   const useCache=function(hit,note){
-    applyWays(hit.ways);
+    applyWays(hit.ways,netKey(hit.filter,hit.bbox));
     const age=Math.round((Date.now()-hit.savedAt)/86400000);
     toast(hit.ways.length+' '+label+' from this device'+(note?' ('+note+')':'')+
           (age>0?' · saved '+age+'d ago':''));
@@ -1719,13 +1854,17 @@ function importOSM(filter,label,bbox,opts){
     busyStart('Loading the street network');
     return overpass(q,function(){ })
       .then(function(data){
-        const ways=(data.elements||[]).filter(w=>w.geometry&&w.geometry.length>1).slice(0,3000)
+        /* The whole capital area is ~43 000 ways and 305 000 points; a 3 000-way
+           cap silently kept 7% of it and left the rest of the region unroutable.
+           The ceiling now exists only to stop a runaway query, not to trim a
+           legitimate region. */
+        const ways=(data.elements||[]).filter(w=>w.geometry&&w.geometry.length>1).slice(0,MAX_WAYS)
           .map(function(w){
             return {name:(w.tags&&(w.tags.name||w.tags.highway))||'way',
                     pts:w.geometry.map(g=>({lat:g.lat,lng:g.lon}))};
           });
         if(!ways.length){ toast('No '+label+' found here'); return 0; }
-        applyWays(ways);
+        applyWays(ways,netKey(filter,bbox));
         netCachePut(filter,bbox,ways);
         toast('Loaded '+ways.length+' '+label);
         return ways.length;
@@ -1741,7 +1880,7 @@ function importOSM(filter,label,bbox,opts){
         return osmApiWays(filter,small,function(){
         }).then(function(ways){
           if(!ways.length) throw new Error('no ways');
-          applyWays(ways);
+          applyWays(ways,netKey(filter,small));
           netCachePut(filter,small,ways);
           toast('Loaded '+ways.length+' '+label+' from OpenStreetMap directly');
           return ways.length;
@@ -1774,7 +1913,9 @@ const AUTO_NET_NEAR_M=60;       /* an endpoint this close to a line needs nothin
    between its endpoints, and anything outside the fetched box simply cannot be
    found, so the padding scales with how far apart the endpoints are. */
 const AUTO_NET_PAD_MIN_M=350, AUTO_NET_PAD_FRAC=0.3, AUTO_NET_PAD_MAX_M=1500;
-const AUTO_NET_MAX_SPAN_M=15000;
+/* the capital area runs about 25 km corner to corner, so a route across it must
+   not be refused for being "far apart" */
+const AUTO_NET_MAX_SPAN_M=40000;
 function autoNetPad(){
   return Math.min(AUTO_NET_PAD_MAX_M, Math.max(AUTO_NET_PAD_MIN_M, hav(A,B)*AUTO_NET_PAD_FRAC));
 }
@@ -2073,6 +2214,14 @@ function dbWipe(){
    tomorrow needs no network at all. Cached geometry is imported OSM data, and
    stays as read-only as any other import. */
 const NET_CACHE_KEY='areas', NET_CACHE_MAX=8;
+/* identifies one cached area, so the autosave can name what is loaded instead
+   of carrying it */
+function netKey(filter,bbox){ return (filter===ROAD?'road':'bike')+'@'+bbox.map(v=>v.toFixed(3)).join(','); }
+function netCacheByKey(key){
+  return dbGet(NET,NET_CACHE_KEY).then(function(list){
+    return (list||[]).filter(function(e){ return netKey(e.filter,e.bbox)===key; })[0]||null;
+  }).catch(function(){ return null; });
+}
 function netCacheGet(filter,bbox){
   return dbGet(NET,NET_CACHE_KEY).then(function(list){
     if(!list||!list.length) return null;
@@ -2103,11 +2252,16 @@ function snapshot(){
   const ctr=map.getCenter();
   return {
     schema:SCHEMA, savedAt:Date.now(),
-    paths:paths.map(function(p){
+    /* Only what the user made. A capital-area import is 43 000 ways and 11 MB of
+       JSON — writing that into the autosave on every pan is minutes of wasted
+       serialisation for data the network cache already holds. The loaded area is
+       recorded by key instead and re-hydrated from that cache on load. */
+    paths:paths.filter(p=>p.source!=='osm').map(function(p){
       return {uid:p.uid||uuid(), updatedAt:p.updatedAt||Date.now(), name:p.name,
               color:p.color, source:p.source,
               pts:p.pts.map(x=>({lat:x.lat,lng:x.lng}))};
     }),
+    loadedNet:loadedNet,
     cands:cands.map(function(c){
       return {uid:c.uid||uuid(), updatedAt:c.updatedAt||Date.now(), name:c.name,
               color:c.color, vias:c.vias.map(v=>({lat:v.lat,lng:v.lng}))};
@@ -2156,6 +2310,18 @@ function applyState(st){
   if(st.view) map.setView([st.view.lat,st.view.lng],st.view.z);
   if(st.appendTo==='start') document.getElementById('end-start').click();
   dirty=vDirty=true;
+
+  /* bring back the network that was loaded, from the cache rather than the
+     snapshot — silently, because the user already consented to it once */
+  if(st.loadedNet){
+    netCacheByKey(st.loadedNet).then(function(hit){
+      if(!hit||!hit.ways.length) return;
+      const keepHistory=history.length;
+      applyWays(hit.ways,st.loadedNet);
+      history.length=keepHistory;          /* restoring is not an undoable act */
+      toast(hit.ways.length.toLocaleString('en-GB').replace(/,/g,' ')+' imported ways restored');
+    });
+  }
 }
 document.getElementById('wipe').onclick=function(){
   /* the only action in the app that undo cannot reach, so it asks */
